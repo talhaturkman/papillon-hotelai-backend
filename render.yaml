@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: papillon-hotelai-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      - key: GEMINI_API_KEY
+        sync: false
+    autoDeploy: true
+    healthCheckPath: /health
+    plan: starter
+    scaling:
+      minInstances: 1
+      maxInstances: 1 

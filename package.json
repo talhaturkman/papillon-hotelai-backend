@@ -1,15 +1,15 @@
 {
   "name": "hotelai-backend",
   "version": "1.0.0",
-  "main": "./backend/index.js",
+  "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node ./backend/index.js",
-    "dev": "nodemon ./backend/index.js",
+    "start": "node index.js",
+    "dev": "nodemon index.js",
     "test": "jest",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "analyze": "node ./backend/analytics/generate-reports.js"
+    "analyze": "node analytics/generate-reports.js"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -46,4 +46,4 @@
   "engines": {
     "node": ">=18.0.0"
   }
-} 
+}
