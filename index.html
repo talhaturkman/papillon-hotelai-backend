@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HotelAI Assistant</title>
+    <meta name="description" content="Your personal AI hotel assistant">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#2563eb">
+    
+    <!-- PWA Icons -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-icon-180.png">
+    
+    <!-- Modern UI Libraries -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/@mdi/font@6.5.95/css/materialdesignicons.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    
+    <!-- Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { 
+            getFirestore, collection, addDoc, query, where, 
+            orderBy, limit, onSnapshot 
+        } from "https://www.gstatic.com/firebasejs/10.8.0/firestore.js";
+
+        window.firebase = {
+            initializeApp,
+            firestore: {
+                getFirestore, collection, addDoc, query, where,
+                orderBy, limit, onSnapshot
+            }
+        };
+    </script>
+
+    <style>
+        .chat-container {
+            @apply flex-1 overflow-y-auto p-4 space-y-4;
+            scroll-behavior: smooth;
+        }
+        
+        .message {
+            @apply max-w-[80%] rounded-lg p-4 mb-4;
+        }
+        
+        .user-message {
+            @apply bg-blue-100 ml-auto;
+        }
+        
+        .ai-message {
+            @apply bg-gray-100;
+        }
+        
+        .typing-indicator {
+            @apply flex space-x-2 items-center p-4 bg-gray-50 rounded-lg;
+        }
+        
+        .typing-dot {
+            @apply w-2 h-2 bg-gray-400 rounded-full animate-bounce;
+        }
+        
+        .language-selector {
+            @apply absolute top-4 right-4 bg-white rounded-lg shadow-md p-2;
+        }
+        
+        .quick-action {
+            @apply flex items-center space-x-2 p-3 rounded-lg transition-colors duration-200
+                   hover:bg-blue-50 cursor-pointer;
+        }
+        
+        .service-card {
+            @apply bg-white rounded-lg shadow-md p-4 cursor-pointer transition-transform duration-200
+                   hover:transform hover:scale-105;
+        }
+        
+        .preference-tag {
+            @apply inline-flex items-center px-3 py-1 rounded-full text-sm font-medium
+                   bg-blue-100 text-blue-800 mr-2 mb-2;
+        }
+        
+        [v-cloak] {
+            display: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 h-screen flex flex-col">
+    <div id="app" v-cloak class="h-full flex flex-col">
+        <!-- Room Authentication -->
+        <div v-if="!isAuthenticated" class="min-h-screen flex items-center justify-center p-4">
+            <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
+                <h2 class="text-2xl font-bold mb-6 text-center">HotelAI Assistant</h2>
+                <form @submit.prevent="authenticate" class="space-y-4">
+                    <div>
+                        <label class="block text-gray-700 text-sm font-bold mb-2">
+                            Room Number
+                        </label>
+                        <input 
+                            type="text" 
+                            v-model="roomNumber"
+                            class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            required
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 text-sm font-bold mb-2">
+                            Access Code
+                        </label>
+                        <input 
+                            type="password" 
+                            v-model="accessCode"
+                            class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            required
+                        >
+                    </div>
+                    <button 
+                        type="submit"
+                        class="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors duration-200"
+                    >
+                        Enter
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Main Chat Interface -->
+        <div v-else class="h-full flex flex-col">
+            <!-- Header -->
+            <header class="bg-white shadow-md p-4 flex justify-between items-center">
+                <div class="flex items-center space-x-4">
+                    <img src="/logo.png" alt="HotelAI" class="h-8">
+                    <h1 class="text-xl font-semibold">HotelAI Assistant</h1>
+                </div>
+                
+                <!-- Language Selector -->
+                <div class="relative">
+                    <button 
+                        @click="showLanguages = !showLanguages"
+                        class="flex items-center space-x-2 px-3 py-2 rounded-lg hover:bg-gray-100"
+                    >
+                        <span>{{ currentLanguage.name }}</span>
+                        <i class="mdi mdi-chevron-down"></i>
+                    </button>
+                    
+                    <div 
+                        v-if="showLanguages"
+                        class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2"
+                    >
+                        <button 
+                            v-for="lang in languages" 
+                            :key="lang.code"
+                            @click="changeLanguage(lang.code)"
+                            class="block w-full text-left px-4 py-2 hover:bg-gray-100"
+                        >
+                            {{ lang.name }}
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Main Content Area -->
+            <div class="flex-1 flex overflow-hidden">
+                <!-- Sidebar -->
+                <aside class="w-64 bg-white border-r hidden md:block">
+                    <!-- Quick Actions -->
+                    <div class="p-4">
+                        <h3 class="text-sm font-medium text-gray-500 mb-4">Quick Actions</h3>
+                        <div class="space-y-2">
+                            <div 
+                                v-for="action in quickActions"
+                                :key="action.id"
+                                @click="sendQuickAction(action)"
+                                class="quick-action"
+                            >
+                                <i :class="action.icon" class="mdi text-xl text-blue-600"></i>
+                                <span>{{ action.label }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Services -->
+                    <div class="p-4 border-t">
+                        <h3 class="text-sm font-medium text-gray-500 mb-4">Available Services</h3>
+                        <div class="space-y-4">
+                            <div 
+                                v-for="service in services"
+                                :key="service.id"
+                                class="service-card"
+                                @click="requestService(service)"
+                            >
+                                <i :class="service.icon" class="mdi text-2xl text-blue-600 mb-2"></i>
+                                <h4 class="font-medium">{{ service.name }}</h4>
+                                <p class="text-sm text-gray-600">{{ service.description }}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Your Preferences -->
+                    <div class="p-4 border-t">
+                        <h3 class="text-sm font-medium text-gray-500 mb-4">Your Preferences</h3>
+                        <div>
+                            <span 
+                                v-for="pref in preferences"
+                                :key="pref"
+                                class="preference-tag"
+                            >
+                                {{ pref }}
+                            </span>
+                        </div>
+                    </div>
+                </aside>
+
+                <!-- Chat Area -->
+                <div class="flex-1 flex flex-col bg-gray-50">
+                    <!-- Messages -->
+                    <div ref="chatContainer" class="chat-container">
+                        <div 
+                            v-for="message in messages"
+                            :key="message.id"
+                            :class="['message', message.isUser ? 'user-message' : 'ai-message']"
+                        >
+                            <p class="text-gray-800">{{ message.text }}</p>
+                            <span class="text-xs text-gray-500 mt-1 block">
+                                {{ formatTime(message.timestamp) }}
+                            </span>
+                        </div>
+                        
+                        <!-- Typing Indicator -->
+                        <div v-if="isTyping" class="typing-indicator">
+                            <div class="typing-dot"></div>
+                            <div class="typing-dot" style="animation-delay: 0.2s"></div>
+                            <div class="typing-dot" style="animation-delay: 0.4s"></div>
+                        </div>
+                    </div>
+
+                    <!-- Input Area -->
+                    <div class="bg-white border-t p-4">
+                        <form @submit.prevent="sendMessage" class="flex space-x-4">
+                            <input 
+                                type="text"
+                                v-model="newMessage"
+                                :placeholder="currentLanguage.placeholder"
+                                class="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                :disabled="isTyping"
+                            >
+                            <button 
+                                type="submit"
+                                class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors duration-200 disabled:opacity-50"
+                                :disabled="!newMessage.trim() || isTyping"
+                            >
+                                <i class="mdi mdi-send"></i>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Service Request Modal -->
+        <div v-if="selectedService" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-lg max-w-md w-full p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-medium">{{ selectedService.name }}</h3>
+                    <button @click="selectedService = null" class="text-gray-500 hover:text-gray-700">
+                        <i class="mdi mdi-close"></i>
+                    </button>
+                </div>
+                <form @submit.prevent="confirmServiceRequest" class="space-y-4">
+                    <div v-if="selectedService.hasDateTime">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Preferred Date/Time
+                        </label>
+                        <input 
+                            type="datetime-local"
+                            v-model="serviceRequest.dateTime"
+                            class="w-full px-3 py-2 border rounded-lg"
+                            required
+                        >
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Special Requests
+                        </label>
+                        <textarea
+                            v-model="serviceRequest.notes"
+                            rows="3"
+                            class="w-full px-3 py-2 border rounded-lg"
+                            placeholder="Any special requirements..."
+                        ></textarea>
+                    </div>
+                    <div class="flex justify-end space-x-4">
+                        <button 
+                            type="button"
+                            @click="selectedService = null"
+                            class="px-4 py-2 border rounded-lg hover:bg-gray-50"
+                        >
+                            Cancel
+                        </button>
+                        <button 
+                            type="submit"
+                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                        >
+                            Confirm Request
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, computed, nextTick } = Vue;
+
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBEsZy9K0AfUhTbIMT-H_DEr3tr5LcoQV0",
+            authDomain: "gen-lang-client-0930707875.firebaseapp.com",
+            projectId: "gen-lang-client-0930707875",
+            storageBucket: "gen-lang-client-0930707875.appspot.com",
+            messagingSenderId: "554933755828",
+            appId: "1:554933755828:web:524d063fef4a9783801ce1"
+        };
+
+        createApp({
+            setup() {
+                // Firebase initialization
+                const app = window.firebase.initializeApp(firebaseConfig);
+                const db = window.firebase.firestore.getFirestore(app);
+
+                // State
+                const isAuthenticated = ref(false);
+                const roomNumber = ref('');
+                const accessCode = ref('');
+                const messages = ref([]);
+                const newMessage = ref('');
+                const isTyping = ref(false);
+                const showLanguages = ref(false);
+                const selectedService = ref(null);
+                const serviceRequest = ref({
+                    dateTime: '',
+                    notes: ''
+                });
+                const preferences = ref([]);
+                const chatContainer = ref(null);
+
+                // Language configuration
+                const currentLanguage = ref({
+                    code: 'tr',
+                    name: 'Türkçe',
+                    placeholder: 'Mesajınızı yazın...'
+                });
+
+                const languages = [
+                    { code: 'tr', name: 'Türkçe', placeholder: 'Mesajınızı yazın...' },
+                    { code: 'en', name: 'English', placeholder: 'Type your message...' },
+                    { code: 'de', name: 'Deutsch', placeholder: 'Nachricht eingeben...' },
+                    { code: 'ru', name: 'Русский', placeholder: 'Введите сообщение...' }
+                ];
+
+                // Quick actions
+                const quickActions = [
+                    { 
+                        id: 'housekeeping',
+                        label: 'Housekeeping',
+                        icon: 'mdi-broom',
+                        message: 'I need housekeeping service.'
+                    },
+                    {
+                        id: 'checkout',
+                        label: 'Check-out Time',
+                        icon: 'mdi-clock-outline',
+                        message: 'What time is check-out?'
+                    },
+                    {
+                        id: 'wifi',
+                        label: 'WiFi Password',
+                        icon: 'mdi-wifi',
+                        message: 'What is the WiFi password?'
+                    },
+                    {
+                        id: 'restaurant',
+                        label: 'Restaurant Hours',
+                        icon: 'mdi-food',
+                        message: 'What are the restaurant hours?'
+                    }
+                ];
+
+                // Available services
+                const services = [
+                    {
+                        id: 'roomService',
+                        name: 'Room Service',
+                        description: 'Order food and beverages',
+                        icon: 'mdi-room-service',
+                        hasDateTime: true
+                    },
+                    {
+                        id: 'spa',
+                        name: 'Spa & Wellness',
+                        description: 'Book spa treatments',
+                        icon: 'mdi-spa',
+                        hasDateTime: true
+                    },
+                    {
+                        id: 'transport',
+                        name: 'Transportation',
+                        description: 'Airport transfers & taxi services',
+                        icon: 'mdi-car',
+                        hasDateTime: true
+                    },
+                    {
+                        id: 'concierge',
+                        name: 'Concierge',
+                        description: 'Local recommendations & bookings',
+                        icon: 'mdi-concierge',
+                        hasDateTime: false
+                    }
+                ];
+
+                // Methods
+                async function authenticate() {
+                    try {
+                        const response = await fetch('/api/authenticate', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                roomNumber: roomNumber.value,
+                                accessCode: accessCode.value
+                            })
+                        });
+
+                        if (response.ok) {
+                            const data = await response.json();
+                            localStorage.setItem('token', data.token);
+                            isAuthenticated.value = true;
+                            loadUserData();
+                        } else {
+                            alert('Invalid room number or access code');
+                        }
+                    } catch (error) {
+                        console.error('Authentication error:', error);
+                        alert('Failed to authenticate');
+                    }
+                }
+
+                async function loadUserData() {
+                    try {
+                        // Load messages
+                        const messagesRef = window.firebase.firestore.collection(db, 'messages');
+                        const q = window.firebase.firestore.query(
+                            messagesRef,
+                            window.firebase.firestore.where('roomNumber', '==', roomNumber.value),
+                            window.firebase.firestore.orderBy('timestamp', 'desc'),
+                            window.firebase.firestore.limit(50)
+                        );
+
+                        window.firebase.firestore.onSnapshot(q, (snapshot) => {
+                            messages.value = snapshot.docs
+                                .map(doc => ({
+                                    id: doc.id,
+                                    ...doc.data()
+                                }))
+                                .reverse();
+                            
+                            scrollToBottom();
+                        });
+
+                        // Load preferences
+                        const prefsResponse = await fetch('/api/preferences', {
+                            headers: {
+                                'Authorization': `Bearer ${localStorage.getItem('token')}`
+                            }
+                        });
+                        
+                        if (prefsResponse.ok) {
+                            const prefsData = await prefsResponse.json();
+                            preferences.value = prefsData.preferences;
+                        }
+                    } catch (error) {
+                        console.error('Error loading user data:', error);
+                    }
+                }
+
+                async function sendMessage() {
+                    if (!newMessage.value.trim()) return;
+
+                    const messageText = newMessage.value;
+                    newMessage.value = '';
+                    isTyping.value = true;
+
+                    try {
+                        // Add message to UI immediately
+                        messages.value.push({
+                            id: Date.now(),
+                            text: messageText,
+                            isUser: true,
+                            timestamp: new Date()
+                        });
+
+                        scrollToBottom();
+
+                        // Send to backend
+                        const response = await fetch('/api/chat', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${localStorage.getItem('token')}`
+                            },
+                            body: JSON.stringify({
+                                message: messageText,
+                                language: currentLanguage.value.code
+                            })
+                        });
+
+                        if (response.ok) {
+                            const data = await response.json();
+                            
+                            // Add AI response
+                            messages.value.push({
+                                id: Date.now() + 1,
+                                text: data.response,
+                                isUser: false,
+                                timestamp: new Date()
+                            });
+
+                            scrollToBottom();
+                        } else {
+                            throw new Error('Failed to get response');
+                        }
+                    } catch (error) {
+                        console.error('Error sending message:', error);
+                        alert('Failed to send message');
+                    } finally {
+                        isTyping.value = false;
+                    }
+                }
+
+                function sendQuickAction(action) {
+                    newMessage.value = action.message;
+                    sendMessage();
+                }
+
+                function requestService(service) {
+                    selectedService.value = service;
+                    serviceRequest.value = {
+                        dateTime: '',
+                        notes: ''
+                    };
+                }
+
+                async function confirmServiceRequest() {
+                    try {
+                        const response = await fetch('/api/service-request', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${localStorage.getItem('token')}`
+                            },
+                            body: JSON.stringify({
+                                serviceId: selectedService.value.id,
+                                ...serviceRequest.value
+                            })
+                        });
+
+                        if (response.ok) {
+                            selectedService.value = null;
+                            alert('Service request submitted successfully');
+                        } else {
+                            throw new Error('Failed to submit request');
+                        }
+                    } catch (error) {
+                        console.error('Error requesting service:', error);
+                        alert('Failed to submit service request');
+                    }
+                }
+
+                async function changeLanguage(langCode) {
+                    try {
+                        const response = await fetch('/api/language', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${localStorage.getItem('token')}`
+                            },
+                            body: JSON.stringify({ language: langCode })
+                        });
+
+                        if (response.ok) {
+                            currentLanguage.value = languages.find(lang => lang.code === langCode);
+                            showLanguages.value = false;
+                        } else {
+                            throw new Error('Failed to change language');
+                        }
+                    } catch (error) {
+                        console.error('Error changing language:', error);
+                        alert('Failed to change language');
+                    }
+                }
+
+                function formatTime(date) {
+                    return new Date(date).toLocaleTimeString([], { 
+                        hour: '2-digit', 
+                        minute: '2-digit' 
+                    });
+                }
+
+                async function scrollToBottom() {
+                    await nextTick();
+                    if (chatContainer.value) {
+                        chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
+                    }
+                }
+
+                // Initialize
+                onMounted(() => {
+                    // Check if already authenticated
+                    const token = localStorage.getItem('token');
+                    if (token) {
+                        isAuthenticated.value = true;
+                        loadUserData();
+                    }
+
+                    // Register service worker for PWA
+                    if ('serviceWorker' in navigator) {
+                        navigator.serviceWorker.register('/sw.js')
+                            .then(registration => {
+                                console.log('ServiceWorker registered:', registration);
+                            })
+                            .catch(error => {
+                                console.error('ServiceWorker registration failed:', error);
+                            });
+                    }
+                });
+
+                return {
+                    isAuthenticated,
+                    roomNumber,
+                    accessCode,
+                    messages,
+                    newMessage,
+                    isTyping,
+                    showLanguages,
+                    currentLanguage,
+                    languages,
+                    quickActions,
+                    services,
+                    selectedService,
+                    serviceRequest,
+                    preferences,
+                    chatContainer,
+                    authenticate,
+                    sendMessage,
+                    sendQuickAction,
+                    requestService,
+                    confirmServiceRequest,
+                    changeLanguage,
+                    formatTime
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

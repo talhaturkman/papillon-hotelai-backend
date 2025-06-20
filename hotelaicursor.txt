@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PapillonAI</title>
+    
+    <!-- Gerekli Kütüphaneler -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- PDF Okuma Kütüphanesi -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    
+    <!-- Grafik Kütüphanesi (Chart.js) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Firebase Kütüphaneleri -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-app.js";
+        import { 
+            getFirestore, collection, addDoc, onSnapshot, 
+            query, where, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc, writeBatch, increment
+        } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore.js";
+        import { 
+            getAuth, signInAnonymously, signInWithCustomToken 
+        } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-auth.js";
+        
+        window.firebase = {
+            initializeApp,
+            firestore: {
+                getFirestore, collection, addDoc, onSnapshot,
+                query, where, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc, writeBatch, increment
+            },
+            auth: {
+                getAuth, signInAnonymously, signInWithCustomToken
+            }
+        };
+    </script>
+    
+    <style>
+        body { font-family: sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js`;
+
+        const { useState, useEffect, useRef, useMemo } = React;
+        
+        // --- API ANAHTARLARI ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyBEsZy9K0AfUhTbIMT-H_DEr3tr5LcoQV0",
+            authDomain: "gen-lang-client-0930707875.firebaseapp.com",
+            projectId: "gen-lang-client-0930707875",
+            storageBucket: "gen-lang-client-0930707875.appspot.com",
+            messagingSenderId: "554933755828",
+            appId: "1:554933755828:web:524d063fef4a9783801ce1",
+            measurementId: "G-P0MP1C0N1H"
+        };
+        const GOOGLE_MAPS_API_KEY = "AIzaSyBiqxFAooCoJX1y-_IgDbVAtoaZ2SVKmxk";
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-smart-hotel-app';
+
+        const { initializeApp } = window.firebase;
+        const { getFirestore, collection, onSnapshot, query, getDocs, doc, getDoc, setDoc, deleteDoc, updateDoc, writeBatch, increment } = window.firebase.firestore;
+        const { getAuth, signInAnonymously, signInWithCustomToken } = window.firebase.auth;
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const knowledgeBaseCollection = collection(db, `artifacts/${appId}/public/data/knowledge_base`);
+        const guestProfilesCollection = collection(db, `artifacts/${appId}/public/data/guest_profiles`);
+        const complaintLogsCollection = collection(db, `artifacts/${appId}/public/data/complaint_logs`);
+        const ADMIN_PASSWORD = "otel123";
+        const MASTER_DELETE_PASSWORD = "0044"; 
+
+        // Netlify'da çalışacak şekilde backend URL'sini güncelle
+        async function callGeminiAPI(prompt, outputFormat = 'text') {
+            try {
+                // Render/Fly.io/Railway gibi bir yerde backend'in yayında olmalı
+                const response = await fetch('https://hotelai.onrender.com/api/gemini', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt, outputFormat })
+                });
+                if (!response.ok) throw new Error(`API isteği başarısız oldu, durum: ${response.status}`);
+                const result = await response.json();
+                if (result.candidates && result.candidates.length > 0) {
+                    return result.candidates[0].content.parts[0].text;
+                }
+                if (result && result.candidates && result.candidates[0].content && result.candidates[0].content.parts[0].text) {
+                    return result.candidates[0].content.parts[0].text;
+                }
+                return JSON.stringify({ action: 'cannot_answer', message: 'Anlayamadım, tekrar dener misiniz?' });
+            } catch (error) {
+                console.error("Gemini API Hatası:", error);
+                return JSON.stringify({ action: 'cannot_answer', message: `Üzgünüm, yapay zeka servisine bağlanamıyorum. Hata: ${error.message}` });
+            }
+        }
+        
+        const ChartComponent = ({ type, data, options }) => {
+            const canvasRef = useRef(null);
+            useEffect(() => {
+                let chartInstance;
+                if (canvasRef.current && window.Chart) {
+                    if (Chart.getChart(canvasRef.current)) { Chart.getChart(canvasRef.current).destroy(); }
+                    const ctx = canvasRef.current.getContext('2d');
+                    chartInstance = new Chart(ctx, { type, data, options });
+                }
+                return () => { if (chartInstance) chartInstance.destroy(); };
+            }, [data, options, type]);
+            return <canvas ref={canvasRef}></canvas>;
+        };
+
+        const AdminView = ({ onLogout, adminUser, role }) => {
+            const [mainTab, setMainTab] = useState('dashboard');
+            const [trainingInput, setTrainingInput] = useState('');
+            const [imageUrl, setImageUrl] = useState('');
+            const [category, setCategory] = useState('Diğer');
+            const [isUrlValid, setIsUrlValid] = useState(null);
+            const [selectedFile, setSelectedFile] = useState(null);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [feedback, setFeedback] = useState('');
+            const [uploadProgress, setUploadProgress] = useState(0);
+            const [generalKnowledge, setGeneralKnowledge] = useState([]);
+            const [guestProfiles, setGuestProfiles] = useState([]);
+            const [complaintLogs, setComplaintLogs] = useState([]);
+            const [isLoading, setIsLoading] = useState(true);
+            const [activeSubTab, setActiveSubTab] = useState('general');
+            const [adminMessages, setAdminMessages] = useState([{ text: "Yönetici asistanına komut verin.", sender: 'ai' }]);
+            const [adminInput, setAdminInput] = useState('');
+            const [isAssistantProcessing, setIsAssistantProcessing] = useState(false);
+            const [confirmModalVisible, setConfirmModalVisible] = useState(false);
+            const [pendingCommand, setPendingCommand] = useState(null);
+            const [confirmPassword, setConfirmPassword] = useState('');
+            const [confirmError, setConfirmError] = useState('');
+            const debounceTimeoutRef = useRef(null);
+            const [countryFilter, setCountryFilter] = useState('All');
+            const [roomTypeFilter, setRoomTypeFilter] = useState('All');
+            const [loadingStage, setLoadingStage] = useState('Kütüphaneler başlatılıyor...');
+            const [loadingProgress, setLoadingProgress] = useState(0);
+            const [lastUndoAction, setLastUndoAction] = useState(null);
+            const [adminLogs, setAdminLogs] = useState([]);
+            const [newInfoCategory, setNewInfoCategory] = useState('Hizmet');
+            const [newInfoTitle, setNewInfoTitle] = useState('');
+            const [newInfoDescTR, setNewInfoDescTR] = useState('');
+            const [newInfoDescEN, setNewInfoDescEN] = useState('');
+            const [newInfoDescDE, setNewInfoDescDE] = useState('');
+            const [newInfoDescRU, setNewInfoDescRU] = useState('');
+            const [newInfoImage, setNewInfoImage] = useState('');
+            const [newInfoLink, setNewInfoLink] = useState('');
+            const [infoAddFeedback, setInfoAddFeedback] = useState('');
+            const [infoCategoryFilter, setInfoCategoryFilter] = useState('Tümü');
+            const [editInfoModal, setEditInfoModal] = useState(null);
+            // Kategori ve alt kategori state'leri
+            const [newInfoMainCategory, setNewInfoMainCategory] = useState('Genel');
+            const [newInfoSubCategory, setNewInfoSubCategory] = useState('');
+            const mainCategories = ['Genel', 'Hizmet', 'Etkinlik', 'Çevre', 'Acil Durum', 'Ulaşım', 'Restoran', 'Diğer'];
+            const subCategoriesByMain = {
+                'Genel': ['Tanıtım', 'Kurallar', 'Diğer'],
+                'Hizmet': ['Spa', 'Havuz', 'Oda Servisi', 'Animasyon', 'Diğer'],
+                'Etkinlik': ['Çocuk', 'Yetişkin', 'Spor', 'Diğer'],
+                'Çevre': ['Plaj', 'Market', 'Gezilecek Yer', 'Diğer'],
+                'Acil Durum': ['Sağlık', 'Güvenlik', 'Diğer'],
+                'Ulaşım': ['Transfer', 'Taksi', 'Otobüs', 'Diğer'],
+                'Restoran': ['Ana Restoran', 'A la Carte', 'Bar', 'Diğer'],
+                'Diğer': ['Diğer']
+            };
+            // Filtreleme için
+            const [mainCategoryFilter, setMainCategoryFilter] = useState('Tümü');
+            const [subCategoryFilter, setSubCategoryFilter] = useState('Tümü');
+            // Etiket (tag) state'i
+            const [newInfoTags, setNewInfoTags] = useState('');
+            const [tagFilter, setTagFilter] = useState('Tümü');
+            // Tüm mevcut etiketleri çıkar
+            const allTags = useMemo(() => {
+                const tags = generalKnowledge.flatMap(i => Array.isArray(i.tags) ? i.tags : []);
+                return ['Tümü', ...Array.from(new Set(tags))];
+            }, [generalKnowledge]);
+            // Otel ana kategorisi ekle
+            const hotelOptions = ['Belvil', 'Zeugma', 'Ayscha', 'Diğer'];
+            const [newInfoHotel, setNewInfoHotel] = useState('Belvil');
+            const [hotelFilter, setHotelFilter] = useState('Tümü');
+
+            // Yardım ve örnek komutlar
+            const adminHelpExamples = [
+                'Tüm Papillon Belvil misafirlerini sil',
+                'Sadece Papillon Zeugma şikayetlerini Excel\'e aktar',
+                'Yeni misafir ekle: Adı Ayşe, oda 101, kahve sever',
+                'Papillon Belvil oteldeki ana restoranın adını Sabah Güneşi yap',
+                'Osman Çevik adlı misafirin verisini sil',
+                'Tüm misafir profillerini Excel\'e aktar',
+                'Son işlemi geri al'
+            ];
+
+            useEffect(() => {
+                setLoadingProgress(33); setLoadingStage('Veritabanına bağlanılıyor...');
+                const unsubGeneral = onSnapshot(query(knowledgeBaseCollection), (snapshot) => { setGeneralKnowledge(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))); setLoadingProgress(66); setLoadingStage('Grafikler hazırlanıyor...'); });
+                const unsubGuests = onSnapshot(query(guestProfilesCollection), (snapshot) => setGuestProfiles(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
+                const unsubComplaints = onSnapshot(query(complaintLogsCollection), (snapshot) => { setComplaintLogs(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))); setLoadingProgress(100); setLoadingStage('Yüklendi!'); setTimeout(() => setIsLoading(false), 500); });
+                return () => { unsubGeneral(); unsubGuests(); unsubComplaints(); };
+            }, []);
+
+            const filteredGuestProfiles = useMemo(() => {
+                return guestProfiles.filter(profile => (countryFilter === 'All' || (profile.data && profile.data.country === countryFilter)) && (roomTypeFilter === 'All' || (profile.data && profile.data.roomType === roomTypeFilter)));
+            }, [guestProfiles, countryFilter, roomTypeFilter]);
+
+            const chartData = useMemo(() => {
+                const usageData = filteredGuestProfiles.reduce((acc, profile) => { const intent = profile.data?.intent || 'Bilinmiyor'; acc[intent] = (acc[intent] || 0) + 1; return acc; }, {});
+                const countryData = guestProfiles.reduce((acc, profile) => { const country = profile.data?.country || 'Bilinmiyor'; acc[country] = (acc[country] || 0) + 1; return acc; }, {});
+                 const roomTypeData = guestProfiles.reduce((acc, profile) => { const roomType = profile.data?.roomType || 'Bilinmiyor'; acc[roomType] = (acc[roomType] || 0) + 1; return acc; }, {});
+                return {
+                    usage: Object.entries(usageData).map(([name, value]) => ({ name, value })),
+                    countries: Object.entries(countryData).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value),
+                    roomTypes: Object.entries(roomTypeData).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value),
+                    complaints: complaintLogs.map(log => ({ name: log.complaintType, value: log.count })).sort((a,b) => b.value - a.value)
+                };
+            }, [filteredGuestProfiles, guestProfiles, complaintLogs]);
+            
+            const uniqueCountries = useMemo(() => ['All', ...new Set(guestProfiles.map(p => p.data?.country).filter(Boolean))], [guestProfiles]);
+            const uniqueRoomTypes = useMemo(() => ['All', ...new Set(guestProfiles.map(p => p.data?.roomType).filter(Boolean))], [guestProfiles]);
+            const validateImageUrl = (url) => { if (!url) { setIsUrlValid(null); return; } setIsUrlValid(/^(https?:\/\/.*\.(?:png|jpg|jpeg|gif|svg|webp))$/.test(url)); };
+            const handleImageUrlChange = (e) => { const url = e.target.value; setImageUrl(url); if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current); debounceTimeoutRef.current = setTimeout(() => validateImageUrl(url), 500); };
+            const handleFileChange = e => { const file = e.target.files[0]; if (file && file.type !== 'application/pdf') { setFeedback('Lütfen sadece PDF dosyası yükleyin.'); setSelectedFile(null); return; } if (file && file.size > 10 * 1024 * 1024) { setFeedback('Dosya boyutu 10 MB\'tan büyük olamaz.'); setSelectedFile(null); return; } setSelectedFile(file); setFeedback(''); };
+
+            /**
+             * PDF veya metin bilgisini parçalara ayırıp Gemini ile eğitir, Firestore'a kaydeder.
+             * Hatalı veya eksik parçalarda kullanıcıya ve geliştiriciye bilgi verir.
+             */
+            const processAndTeach = async (text, source, assignedCategory) => {
+                setIsProcessing(true); setUploadProgress(0); setFeedback(`'${source}' hazırlanıyor...`);
+                if (!text || text.trim().length < 20) {
+                    setFeedback('Dosya çok kısa veya okunamadı. Lütfen geçerli bir metin veya PDF yükleyin.');
+                    setIsProcessing(false);
+                    return;
+                }
+                const chunks = text.match(/([\s\S]{1,10000})/g) || [];
+                const totalChunks = chunks.length;
+                if (totalChunks === 0) {
+                    setFeedback("Dosya boş veya okunamadı.");
+                    setIsProcessing(false);
+                    return;
+                }
+                let processedCount = 0, successCount = 0, failCount = 0, failDetails = [];
+                const delay = ms => new Promise(res => setTimeout(res, ms));
+                for (const chunk of chunks) {
+                    try {
+                        // --- Gemini API'ye parça gönder ---
+                        const prompt = `Aşağıdaki bilgiyi analiz et ve otel veritabanı için yapılandırılmış bir veya daha fazla JSON nesnesi içeren bir array'e dönüştür. Bilgi \"${assignedCategory}\" kategorisine aittir. Her nesne ya genel bir otel bilgisi ya da belirli bir misafire ait olabilir. - Genel bilgi formatı: { \"type\": \"general\", \"entity\": \"konu\", \"attributes\": { \"description\": \"...\", \"imageUrl\": \"...\" } } - Misafir bilgisi formatı: { \"type\": \"guest\", \"identifier\": { \"name\": \"Richard Newton\", \"room\": \"oda_no\" }, \"data\": { \"party\": \"2 yetişkin 1 çocuk\", \"preference\": \"viski sever\" } } - Sadece JSON array çıktısı ver. İşlenecek Bilgi Parçası: \"${chunk}\"`;
+                        const jsonResponse = await callGeminiAPI(prompt, 'json');
+                        let parsedJsonArray;
+                        try {
+                            parsedJsonArray = JSON.parse(jsonResponse.replace(/```json/g, '').replace(/```/g, '').trim());
+                        } catch (e) {
+                            failCount++;
+                            failDetails.push(`Yapay zeka geçerli bir formatta cevap vermedi. Parça: ${chunk.slice(0, 100)}...`);
+                            continue;
+                        }
+                        if (Array.isArray(parsedJsonArray)) {
+                            for (const parsedJson of parsedJsonArray) {
+                                if (parsedJson.type === 'general' && parsedJson.entity) {
+                                    const docId = `${assignedCategory.toLowerCase().replace(/\s/g, '_')}_${parsedJson.entity.toLowerCase().replace(/\s/g, '_')}`;
+                                    const docRef = doc(knowledgeBaseCollection, docId);
+                                    await setDoc(docRef, { data: parsedJson.attributes, category: assignedCategory, last_updated: new Date() }, { merge: true });
+                                } else if (parsedJson.type === 'guest' && parsedJson.identifier) {
+                                    const guestId = (parsedJson.identifier.name || 'unknown_guest').toLowerCase().replace(/\s/g, '_') + '_' + (parsedJson.identifier.room || Date.now());
+                                    const docRef = doc(guestProfilesCollection, guestId);
+                                    await setDoc(docRef, { data: parsedJson.data, identifier: parsedJson.identifier, last_updated: new Date() }, { merge: true });
+                                }
+                            }
+                            successCount++;
+                        } else {
+                            failCount++;
+                            failDetails.push(`Yapay zeka beklenen array formatında cevap vermedi. Parça: ${chunk.slice(0, 100)}...`);
+                        }
+                    } catch (error) {
+                        failCount++;
+                        failDetails.push(`Bir parça işlenemedi: ${error.message}. Parça: ${chunk.slice(0, 100)}...`);
+                        console.warn('Eğitim sırasında hata:', error);
+                    }
+                    processedCount++;
+                    const progress = Math.round((processedCount / totalChunks) * 100);
+                    setUploadProgress(progress); setFeedback(`Yapay zeka eğitiliyor... ${progress}%`);
+                    await delay(1500);
+                }
+                let resultMsg = `Eğitim tamamlandı! Başarılı: ${successCount}, Hatalı: ${failCount}`;
+                if (failCount > 0) {
+                    resultMsg += `\nBazı parçalar işlenemedi. Detaylar için konsola bakabilirsiniz.`;
+                    console.warn('Başarısız parçalar:', failDetails);
+                }
+                setFeedback(resultMsg);
+                setUploadProgress(100);
+                setTimeout(() => { setIsProcessing(false); setFeedback(''); setUploadProgress(0); setTrainingInput(''); setSelectedFile(null); setImageUrl(''); setIsUrlValid(null); }, 10000);
+            };
+            const handleTeachFromText = () => { if (trainingInput.trim()) { let textToProcess = trainingInput; if (imageUrl.trim() && isUrlValid) { textToProcess += ` [İlişkili Resim: ${imageUrl.trim()}]`; } processAndTeach(textToProcess, "metin girişi", category); } };
+            const handleTeachFromFile = async () => { if (!selectedFile) return; const reader = new FileReader(); reader.onload = async (event) => { try { const pdf = await pdfjsLib.getDocument({ data: event.target.result }).promise; let fullText = ''; for (let i = 1; i <= pdf.numPages; i++) { const page = await pdf.getPage(i); const textContent = await page.getTextContent(); fullText += textContent.items.map(item => item.str).join(' '); } processAndTeach(fullText, selectedFile.name, category); } catch (error) { setFeedback('PDF dosyası okunurken bir hata oluştu.'); setIsProcessing(false); } }; reader.readAsArrayBuffer(selectedFile); };
+            const AdminChatMessage = ({ msg }) => (<div className={`flex items-end ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} mb-2`}><div className={`p-2 px-3 rounded-lg max-w-md shadow-sm text-sm ${msg.sender === 'user' ? 'bg-purple-500 text-white' : 'bg-gray-200 text-gray-800'}`}>{msg.text}</div></div>);
+
+            // Onay gerektiren işlemler için modal
+            const showConfirmModal = (command, onConfirm) => {
+                setPendingCommand({ command, onConfirm });
+                setConfirmModalVisible(true);
+            };
+            const handleConfirm = async () => {
+                if (pendingCommand && pendingCommand.onConfirm) await pendingCommand.onConfirm();
+                setConfirmModalVisible(false);
+                setPendingCommand(null);
+            };
+            const handleCancel = () => {
+                setConfirmModalVisible(false);
+                setPendingCommand(null);
+            };
+
+            // Gelişmiş komut işleyici (onay ve undo dahil)
+            const handleAdminCommand = async (textToSend = adminInput) => {
+                if (textToSend.trim() === '' || isAssistantProcessing) return;
+                const userMessage = { text: textToSend, sender: 'user' };
+                setAdminInput(''); setIsAssistantProcessing(true);
+                setAdminMessages(prev => [...prev, userMessage]);
+                // Undo komutu
+                if (textToSend.toLowerCase().includes('geri al') || textToSend.toLowerCase().includes('undo')) {
+                    if (lastUndoAction) {
+                        await lastUndoAction();
+                        setAdminMessages(prev => [...prev, { text: 'Son işlem geri alındı.', sender: 'ai' }]);
+                        setLastUndoAction(null);
+                    } else {
+                        setAdminMessages(prev => [...prev, { text: 'Geri alınacak bir işlem yok.', sender: 'ai' }]);
+                    }
+                    setIsAssistantProcessing(false);
+                    return;
+                }
+                // Özel admin prompt (GELİŞTİRİLMİŞ)
+                const adminPrompt = `You are the admin assistant for PapillonAI. Always detect the language of the admin's last message and answer in that language (English, German, Russian, or Turkish), even if the database or knowledge is in Turkish. For all actions (greet, clarify, cannot_answer, answer, chitchat, help), always reply in the admin's language.
+
+You can only operate on these collections: "artifacts" (knowledge base), "guest_profiles", "complaint_logs".
+
+Supported actions:
+- export_excel
+- delete_guest
+- update_value
+- add_guest
+- help (if the admin asks what you can do, reply with this action and a list of your capabilities)
+- cannot_understand
+
+Examples:
+- To export guest profiles: { "action": "export_excel", "collection": "guest_profiles" }
+- To export only Papillon Zeugma complaints: { "action": "export_excel", "collection": "complaint_logs", "filter": {"category": "Papillon Zeugma"} }
+- To delete all Papillon Belvil guests: { "action": "delete_guest", "filter": {"data.hotel": "Papillon Belvil"} }
+- To delete a guest: { "action": "delete_guest", "name": "Osman Çevik" }
+- To update a value: { "action": "update_value", "collection": "artifacts", "criteria": {"category": "Papillon Belvil", "entity": "ana restoran"}, "field": "name", "newValue": "Sabah Güneşi" }
+- To add a new guest: { "action": "add_guest", "profile": {"name": "Ayşe", "room": "101", "preferences": "kahve sever"} }
+- If you cannot understand, return: { "action": "cannot_understand", "message": "..." }
+- If the admin asks what you can do, return: { "action": "help", "capabilities": ["export_excel", "delete_guest", "update_value", "add_guest"], "description": "I can export data, delete guests, update values, add guests, and more." }
+
+Admin command: "${textToSend}"`;
+                try {
+                    const aiResponse = await callGeminiAPI(adminPrompt, 'json');
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(aiResponse.replace(/```json/g, '').replace(/```/g, '').trim());
+                    } catch (e) {
+                        setAdminMessages(prev => [...prev, { text: `AI yanıtı anlaşılamadı: ${aiResponse}`, sender: 'ai' }]);
+                        setAdminLogs(logs => [...logs, { type: 'error', message: aiResponse, time: new Date() }]);
+                        setIsAssistantProcessing(false);
+                        return;
+                    }
+                    // Kritik işlemler için onay
+                    if ((parsed.action === 'delete_guest' && (!parsed.name || parsed.filter)) || (parsed.action === 'update_value' && parsed.criteria)) {
+                        showConfirmModal(parsed, async () => await processAdminCommand(parsed));
+                        setAdminMessages(prev => [...prev, { text: 'Bu işlem için onayınız gerekiyor. Onaylıyor musunuz?', sender: 'ai' }]);
+                        setIsAssistantProcessing(false);
+                        return;
+                    }
+                    // HELP ACTION
+                    if (parsed.action === 'help') {
+                        setAdminMessages(prev => [...prev, { text: parsed.description || 'Yapabileceklerim:', sender: 'ai' }]);
+                        if (parsed.capabilities && Array.isArray(parsed.capabilities)) {
+                            setAdminMessages(prev => [...prev, { text: parsed.capabilities.join(', '), sender: 'ai' }]);
+                        }
+                        setIsAssistantProcessing(false);
+                        return;
+                    }
+                    await processAdminCommand(parsed);
+                } catch (error) {
+                    setAdminMessages(prev => [...prev, { text: `Bir hata oluştu: ${error.message}`, sender: 'ai' }]);
+                    setAdminLogs(logs => [...logs, { type: 'error', message: error.message, time: new Date() }]);
+                } finally {
+                    setIsAssistantProcessing(false);
+                }
+            };
+
+            // Komutları uygulayan fonksiyon (undo desteğiyle)
+            async function processAdminCommand(parsed) {
+                try {
+                    if (parsed.action === 'delete_guest') {
+                        let q = guestProfilesCollection;
+                        if (parsed.name) {
+                            q = query(q, where('identifier.name', '==', parsed.name));
+                        } else if (parsed.filter) {
+                            Object.entries(parsed.filter).forEach(([key, value]) => {
+                                q = query(q, where(key, '==', value));
+                            });
+                        }
+                        const snap = await getDocs(q);
+                        if (snap.empty) {
+                            setAdminMessages(prev => [...prev, { text: `Misafir bulunamadı.`, sender: 'ai' }]);
+                        } else {
+                            // Undo için yedekle
+                            const deletedDocs = snap.docs.map(d => ({ id: d.id, data: d.data() }));
+                            for (const docu of snap.docs) {
+                                await deleteDoc(docu.ref);
+                            }
+                            setAdminMessages(prev => [...prev, { text: `Toplam ${snap.size} misafir silindi.`, sender: 'ai' }]);
+                            setLastUndoAction(() => async () => {
+                                for (const d of deletedDocs) {
+                                    await setDoc(doc(guestProfilesCollection, d.id), d.data);
+                                }
+                            });
+                            setAdminLogs(logs => [...logs, { type: 'delete', count: snap.size, time: new Date() }]);
+                        }
+                    } else if (parsed.action === 'update_value') {
+                        let col;
+                        if (parsed.collection === 'artifacts') col = knowledgeBaseCollection;
+                        else if (parsed.collection === 'guest_profiles') col = guestProfilesCollection;
+                        else if (parsed.collection === 'complaint_logs') col = complaintLogsCollection;
+                        else {
+                            setAdminMessages(prev => [...prev, { text: `Bilinmeyen koleksiyon: ${parsed.collection}. Sadece şunlar destekleniyor: artifacts, guest_profiles, complaint_logs.`, sender: 'ai' }]);
+                            setAdminLogs(logs => [...logs, { type: 'error', message: 'Bilinmeyen koleksiyon', time: new Date() }]);
+                            return;
+                        }
+                        let q = col;
+                        if (parsed.criteria) {
+                            Object.entries(parsed.criteria).forEach(([key, value]) => {
+                                q = query(q, where(key, '==', value));
+                            });
+                        }
+                        const snap = await getDocs(q);
+                        if (snap.empty) {
+                            setAdminMessages(prev => [...prev, { text: `Belge bulunamadı.`, sender: 'ai' }]);
+                        } else {
+                            // Undo için yedekle
+                            const oldDocs = snap.docs.map(d => ({ id: d.id, data: d.data() }));
+                            for (const docu of snap.docs) {
+                                await updateDoc(docu.ref, { [parsed.field]: parsed.newValue });
+                            }
+                            setAdminMessages(prev => [...prev, { text: `Belge(ler) güncellendi.`, sender: 'ai' }]);
+                            setLastUndoAction(() => async () => {
+                                for (const d of oldDocs) {
+                                    await setDoc(doc(col, d.id), d.data);
+                                }
+                            });
+                            setAdminLogs(logs => [...logs, { type: 'update', count: snap.size, time: new Date() }]);
+                        }
+                    } else if (parsed.action === 'export_excel') {
+                        let col;
+                        if (parsed.collection === 'artifacts') col = knowledgeBaseCollection;
+                        else if (parsed.collection === 'guest_profiles') col = guestProfilesCollection;
+                        else if (parsed.collection === 'complaint_logs') col = complaintLogsCollection;
+                        else {
+                            setAdminMessages(prev => [...prev, { text: `Bilinmeyen koleksiyon: ${parsed.collection}`, sender: 'ai' }]);
+                            setAdminLogs(logs => [...logs, { type: 'error', message: 'Bilinmeyen koleksiyon', time: new Date() }]);
+                            return;
+                        }
+                        let q = col;
+                        if (parsed.filter) {
+                            Object.entries(parsed.filter).forEach(([key, value]) => {
+                                q = query(q, where(key, '==', value));
+                            });
+                        }
+                        const snap = await getDocs(q);
+                        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                        if (rows.length === 0) {
+                            setAdminMessages(prev => [...prev, { text: `Koleksiyon boş veya filtreye uyan veri yok.`, sender: 'ai' }]);
+                        } else {
+                            // --- Gelişmiş CSV Export ---
+                            // Alanları düzleştir, tarihleri formatla, Türkçe karakterler için BOM ekle
+                            const flatten = obj => {
+                                const out = {};
+                                for (const k in obj) {
+                                    if (typeof obj[k] === 'object' && obj[k] !== null && !Array.isArray(obj[k])) {
+                                        for (const subk in obj[k]) {
+                                            out[`${k}_${subk}`] = obj[k][subk];
+                                        }
+                                    } else {
+                                        out[k] = obj[k];
+                                    }
+                                }
+                                return out;
+                            };
+                            const flatRows = rows.map(flatten);
+                            // Tarih alanlarını formatla
+                            flatRows.forEach(row => {
+                                Object.keys(row).forEach(key => {
+                                    if (row[key] && typeof row[key] === 'object' && row[key].seconds) {
+                                        // Firestore Timestamp
+                                        const d = new Date(row[key].seconds * 1000);
+                                        row[key] = d.toLocaleString('tr-TR');
+                                    }
+                                });
+                            });
+                            // Başlıkları daha anlamlı yap
+                            const headers = Array.from(new Set(flatRows.flatMap(r => Object.keys(r))));
+                            const csv = [headers.join(',')].concat(
+                                flatRows.map(r => headers.map(h => {
+                                    let v = r[h];
+                                    if (typeof v === 'string') v = v.replace(/"/g, '""');
+                                    return '"' + (v ?? '') + '"';
+                                }).join(','))
+                            ).join('\n');
+                            // UTF-8 BOM ekle (Excel için Türkçe karakter desteği)
+                            const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `${parsed.collection}.csv`;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            setAdminMessages(prev => [...prev, { text: `CSV dosyası indirildi.`, sender: 'ai' }]);
+                            setAdminLogs(logs => [...logs, { type: 'export', count: rows.length, time: new Date() }]);
+                        }
+                    } else if (parsed.action === 'add_guest') {
+                        const guestId = (parsed.profile.name || 'misafir').toLowerCase().replace(/\s/g, '_') + '_' + (parsed.profile.room || Date.now());
+                        const guestRef = doc(guestProfilesCollection, guestId);
+                        await setDoc(guestRef, {
+                            data: parsed.profile,
+                            identifier: { name: parsed.profile.name, room: parsed.profile.room },
+                            last_updated: new Date()
+                        }, { merge: true });
+                        setAdminMessages(prev => [...prev, { text: `Yeni misafir eklendi: ${parsed.profile.name} (Oda: ${parsed.profile.room})`, sender: 'ai' }]);
+                        setAdminLogs(logs => [...logs, { type: 'add', name: parsed.profile.name, time: new Date(), user: adminUser, role }]);
+                    } else if (parsed.action === 'cannot_understand') {
+                        setAdminMessages(prev => [...prev, { text: parsed.message || 'Komut anlaşılamadı.', sender: 'ai' }]);
+                        setAdminLogs(logs => [...logs, { type: 'error', message: parsed.message, time: new Date() }]);
+                    } else if (parsed.action === 'summarize_complaints') {
+                        // Şikayet özetini Firestore'dan çek
+                        let q = complaintLogsCollection;
+                        if (parsed.filter) {
+                            Object.entries(parsed.filter).forEach(([key, value]) => {
+                                q = query(q, where(key, '==', value));
+                            });
+                        }
+                        const snap = await getDocs(q);
+                        let filtered = snap.docs.map(d => d.data());
+                        // Tarih filtresi uygula (ör. today)
+                        if (parsed.period === 'today') {
+                            const today = new Date();
+                            today.setHours(0,0,0,0);
+                            filtered = filtered.filter(d => {
+                                const dt = d.lastReported && d.lastReported.seconds ? new Date(d.lastReported.seconds * 1000) : null;
+                                return dt && dt >= today;
+                            });
+                        }
+                        // En çok şikayet edilen türü bul
+                        if (parsed.summaryType === 'most_common') {
+                            const counts = {};
+                            filtered.forEach(d => {
+                                const t = d.complaintType || 'Bilinmiyor';
+                                counts[t] = (counts[t] || 0) + (d.count || 1);
+                            });
+                            const sorted = Object.entries(counts).sort((a,b) => b[1]-a[1]);
+                            const msg = sorted.length > 0 ? `En çok şikayet edilen: ${sorted[0][0]} (${sorted[0][1]} kez)` : 'Şikayet bulunamadı.';
+                            setAdminMessages(prev => [...prev, { text: msg, sender: 'ai' }]);
+                        } else {
+                            // Detaylı özet
+                            const msg = filtered.length > 0 ? filtered.map(d => `${d.complaintType}: ${d.lastMessage}`).join('\n') : 'Şikayet bulunamadı.';
+                            setAdminMessages(prev => [...prev, { text: msg, sender: 'ai' }]);
+                        }
+                        setAdminLogs(logs => [...logs, { type: 'summary', count: filtered.length, time: new Date() }]);
+                        setIsAssistantProcessing(false);
+                        return;
+                    } else {
+                        setAdminMessages(prev => [...prev, { text: `Bilinmeyen komut: ${JSON.stringify(parsed)}`, sender: 'ai' }]);
+                        setAdminLogs(logs => [...logs, { type: 'error', message: JSON.stringify(parsed), time: new Date() }]);
+                    }
+                } catch (err) {
+                    setAdminMessages(prev => [...prev, { text: `İşlem sırasında hata: ${err.message}`, sender: 'ai' }]);
+                    setAdminLogs(logs => [...logs, { type: 'error', message: err.message, time: new Date() }]);
+                }
+            }
+
+            // Bilgi ekleme fonksiyonu (etiket dahil)
+            const handleAddInfo = async () => {
+                if (!newInfoTitle.trim() || !newInfoDescTR.trim()) {
+                    setInfoAddFeedback('Başlık ve Türkçe açıklama zorunludur.');
+                    return;
+                }
+                try {
+                    const docId = `${(newInfoMainCategory || newInfoCategory).toLowerCase().replace(/\s/g, '_')}_${(newInfoSubCategory || 'genel').toLowerCase().replace(/\s/g, '_')}_${newInfoTitle.toLowerCase().replace(/\s/g, '_')}`;
+                    const docRef = doc(knowledgeBaseCollection, docId);
+                    await setDoc(docRef, {
+                        data: {
+                            title: newInfoTitle,
+                            description_tr: newInfoDescTR,
+                            description_en: newInfoDescEN,
+                            description_de: newInfoDescDE,
+                            description_ru: newInfoDescRU,
+                            imageUrl: newInfoImage,
+                            link: newInfoLink
+                        },
+                        category: newInfoMainCategory,
+                        subcategory: newInfoSubCategory,
+                        tags: newInfoTags.split(',').map(t => t.trim()).filter(Boolean),
+                        hotel: newInfoHotel || 'Belvil',
+                        last_updated: new Date()
+                    }, { merge: true });
+                    setInfoAddFeedback('Bilgi başarıyla eklendi!');
+                    setNewInfoTitle(''); setNewInfoDescTR(''); setNewInfoDescEN(''); setNewInfoDescDE(''); setNewInfoDescRU(''); setNewInfoImage(''); setNewInfoLink(''); setNewInfoMainCategory('Genel'); setNewInfoSubCategory(''); setNewInfoTags('');
+                } catch (err) {
+                    setInfoAddFeedback('Hata: ' + err.message);
+                }
+            };
+
+            // Kategorileri çıkar
+            const infoCategories = useMemo(() => {
+                const cats = generalKnowledge.map(i => i.category).filter(Boolean);
+                return ['Tümü', ...Array.from(new Set(cats))];
+            }, [generalKnowledge]);
+
+            // Filtrelenmiş bilgiler
+            const filteredGeneralKnowledge = useMemo(() => {
+                if (infoCategoryFilter === 'Tümü') return generalKnowledge;
+                return generalKnowledge.filter(i => i.category === infoCategoryFilter);
+            }, [generalKnowledge, infoCategoryFilter]);
+
+            // Sürükle-bırak için react-beautiful-dnd benzeri bir yapı (yalın JS ile)
+            const [draggedIndex, setDraggedIndex] = useState(null);
+            const [dragOverIndex, setDragOverIndex] = useState(null);
+
+            // Sıralama güncelleme fonksiyonu
+            const handleDragStart = idx => setDraggedIndex(idx);
+            const handleDragOver = idx => { if (draggedIndex !== null) setDragOverIndex(idx); };
+            const handleDrop = async (list, setList, collectionRef) => {
+                if (draggedIndex === null || dragOverIndex === null || draggedIndex === dragOverIndex) { setDraggedIndex(null); setDragOverIndex(null); return; }
+                const newList = [...list];
+                const [removed] = newList.splice(draggedIndex, 1);
+                newList.splice(dragOverIndex, 0, removed);
+                setList(newList);
+                // Firestore'a yeni sıralamayı kaydet
+                for (let i = 0; i < newList.length; i++) {
+                    const docRef = doc(collectionRef, newList[i].id);
+                    await setDoc(docRef, { order: i }, { merge: true });
+                }
+                setDraggedIndex(null); setDragOverIndex(null);
+            };
+
+            // Otomatik bilgi önerisi için öneri state'i
+            const [infoSuggestions, setInfoSuggestions] = useState([]);
+            // Başlık değiştikçe önerileri güncelle
+            useEffect(() => {
+                if (!newInfoTitle.trim()) { setInfoSuggestions([]); return; }
+                const lower = newInfoTitle.trim().toLowerCase();
+                const suggestions = generalKnowledge.filter(item =>
+                    (item.data?.title || '').toLowerCase().includes(lower)
+                );
+                setInfoSuggestions(suggestions);
+            }, [newInfoTitle, generalKnowledge]);
+
+            // Gelişmiş arama için state
+            const [searchQuery, setSearchQuery] = useState('');
+
+            // Zaman serisi analitik için yardımcı fonksiyon
+            function getDailyCounts(docs, dateField = 'last_updated', days = 30) {
+                const now = new Date();
+                const counts = Array.from({ length: days }, (_, i) => {
+                    const d = new Date(now);
+                    d.setDate(now.getDate() - (days - 1 - i));
+                    return { date: d.toISOString().slice(0, 10), count: 0 };
+                });
+                docs.forEach(doc => {
+                    const date = (doc[dateField] && doc[dateField].toDate ? doc[dateField].toDate() : new Date(doc[dateField])) || null;
+                    if (!date) return;
+                    const iso = date.toISOString().slice(0, 10);
+                    const found = counts.find(c => c.date === iso);
+                    if (found) found.count++;
+                });
+                return counts;
+            }
+
+            // Bildirimler için state
+            const [notifications, setNotifications] = useState([]);
+            const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+            const [notifRead, setNotifRead] = useState({});
+            // Kritik şikayetleri ve önemli güncellemeleri topla
+            useEffect(() => {
+                const criticals = complaintLogs
+                    .filter(log => (log.complaintType || '').toLowerCase().includes('acil') || (log.complaintType || '').toLowerCase().includes('sağlık'))
+                    .sort((a, b) => (b.lastReported?.toDate ? b.lastReported.toDate() : new Date(b.lastReported || 0)) - (a.lastReported?.toDate ? a.lastReported.toDate() : new Date(a.lastReported || 0)))
+                    .slice(0, 10)
+                    .map(log => ({
+                        id: log.id,
+                        type: 'critical',
+                        title: log.complaintType,
+                        message: log.lastMessage,
+                        time: log.lastReported?.toDate ? log.lastReported.toDate() : new Date(log.lastReported || 0)
+                    }));
+                // Burada önemli güncellemeler de eklenebilir (ör: yeni bilgi eklendi vs.)
+                setNotifications(criticals);
+            }, [complaintLogs]);
+            // Bildirim okundu/okunmadı
+            const markNotifRead = id => setNotifRead(r => ({ ...r, [id]: true }));
+
+            if (isLoading) {
+                 return <div className="flex flex-col justify-center items-center h-screen bg-gray-100"><p className="text-lg text-gray-600 mb-4">Yönetim paneli yükleniyor...</p><div className="w-1/2 bg-gray-200 rounded-full h-2.5 mb-2"><div className="bg-purple-600 h-2.5 rounded-full transition-all duration-500" style={{ width: `${loadingProgress}%` }}></div></div><p className="text-sm text-gray-500">{loadingStage}</p></div>;
+            }
+            
+            return (
+                 <div className="p-4 md:p-8 bg-gray-100 min-h-screen font-sans">
+                    <div className="max-w-7xl mx-auto bg-white p-6 rounded-2xl shadow-xl">
+                        <div className="flex justify-between items-center mb-6"><h1 className="text-2xl font-bold text-gray-800">PapillonAI Yönetim Paneli</h1><div className="flex items-center space-x-2"><nav className="flex space-x-1 bg-gray-200 p-1 rounded-lg"><button onClick={() => setMainTab('dashboard')} className={`px-3 py-1 text-sm font-semibold rounded-md ${mainTab === 'dashboard' ? 'bg-white shadow' : 'text-gray-600 hover:bg-gray-300'}`}>Analitik Pano</button><button onClick={() => setMainTab('training')} className={`px-3 py-1 text-sm font-semibold rounded-md ${mainTab === 'training' ? 'bg-white shadow' : 'text-gray-600 hover:bg-gray-300'}`}>Eğitim Merkezi</button><button onClick={() => setMainTab('records')} className={`px-3 py-1 text-sm font-semibold rounded-md ${mainTab === 'records' ? 'bg-white shadow' : 'text-gray-600 hover:bg-gray-300'}`}>Kayıtlı Bilgiler</button><button onClick={() => setMainTab('audit')} className={`px-3 py-1 text-sm font-semibold rounded-md ${mainTab === 'audit' ? 'bg-white shadow' : 'text-gray-600 hover:bg-gray-300'}`}>İşlem Geçmişi</button></nav><button onClick={onLogout} className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600">Çıkış</button></div></div>
+                        {mainTab === 'dashboard' && (
+                            <div>
+                                <h2 className="text-xl font-semibold text-gray-700 mb-4">Genel Bakış</h2>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                                    <div className="bg-blue-50 p-4 rounded-lg"><h3 className="text-sm font-bold text-blue-800">Toplam Misafir Profili</h3><p className="text-2xl font-bold">{guestProfiles.length}</p></div>
+                                    <div className="bg-red-50 p-4 rounded-lg"><h3 className="text-sm font-bold text-red-800">Tespit Edilen Sorunlar</h3><p className="text-2xl font-bold">{complaintLogs.length}</p></div>
+                                </div>
+                                <div className="mb-6 flex space-x-4">
+                                    <div><label className="text-sm font-medium">Ülkeye Göre Filtrele:</label><select value={countryFilter} onChange={e => setCountryFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm">{uniqueCountries.map(c => <option key={c}>{c}</option>)}</select></div>
+                                    <div><label className="text-sm font-medium">Oda Tipine Göre Filtrele:</label><select value={roomTypeFilter} onChange={e => setRoomTypeFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm">{uniqueRoomTypes.map(r => <option key={r}>{r}</option>)}</select></div>
+                                </div>
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                                    <div className="bg-gray-50 p-4 rounded-lg">
+                                        <h3 className="font-semibold mb-2">Ülkelere Göre Misafir Dağılımı</h3>
+                                        <div style={{height: '300px'}}><ChartComponent type='bar' data={{ labels: chartData.countries.map(c => c.name), datasets: [{ label: 'Misafir Sayısı', data: chartData.countries.map(c => c.value), backgroundColor: '#8884d8' }]}} /></div>
+                                    </div>
+                                    <div className="bg-gray-50 p-4 rounded-lg">
+                                        <h3 className="font-semibold mb-2">En Sık Raporlanan Sorunlar</h3>
+                                        <div style={{height: '300px'}}><ChartComponent type='bar' data={{ labels: chartData.complaints.map(c => c.name), datasets: [{ label: 'Rapor Sayısı', data: chartData.complaints.map(c => c.value), backgroundColor: '#ef4444' }]}} options={{ indexAxis: 'y' }}/></div>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mt-8">
+                                    <div className="bg-white p-4 rounded-lg shadow">
+                                        <h3 className="font-semibold mb-2">Son 30 Gün: Şikayetler</h3>
+                                        <ChartComponent type='line' data={{
+                                            labels: getDailyCounts(complaintLogs, 'lastReported').map(c => c.date),
+                                            datasets: [{ label: 'Şikayet', data: getDailyCounts(complaintLogs, 'lastReported').map(c => c.count), borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', fill: true }]
+                                        }} options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }} />
+                                    </div>
+                                    <div className="bg-white p-4 rounded-lg shadow">
+                                        <h3 className="font-semibold mb-2">Son 30 Gün: Bilgi Girişi</h3>
+                                        <ChartComponent type='line' data={{
+                                            labels: getDailyCounts(generalKnowledge, 'last_updated').map(c => c.date),
+                                            datasets: [{ label: 'Bilgi', data: getDailyCounts(generalKnowledge, 'last_updated').map(c => c.count), borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.1)', fill: true }]
+                                        }} options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }} />
+                                    </div>
+                                    <div className="bg-white p-4 rounded-lg shadow">
+                                        <h3 className="font-semibold mb-2">Son 30 Gün: Misafir Profili</h3>
+                                        <ChartComponent type='line' data={{
+                                            labels: getDailyCounts(guestProfiles, 'last_updated').map(c => c.date),
+                                            datasets: [{ label: 'Misafir', data: getDailyCounts(guestProfiles, 'last_updated').map(c => c.count), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true }]
+                                        }} options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }} />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {mainTab === 'training' && (
+                            <div className="mb-8 border-b pb-8">
+                                <h2 className="text-xl font-semibold text-gray-700 mb-4">Eğitim Merkezi / Bilgi Ekle</h2>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Ana Kategori Seçin:</label>
+                                    <select value={newInfoMainCategory} onChange={e => { setNewInfoMainCategory(e.target.value); setNewInfoSubCategory(''); }} className="w-full p-3 border rounded-md bg-white">
+                                        {mainCategories.map(cat => <option key={cat}>{cat}</option>)}
+                                    </select>
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Alt Kategori Seçin:</label>
+                                    <select value={newInfoSubCategory} onChange={e => setNewInfoSubCategory(e.target.value)} className="w-full p-3 border rounded-md bg-white">
+                                        <option value="">Seçiniz</option>
+                                        {(subCategoriesByMain[newInfoMainCategory] || []).map(sub => <option key={sub}>{sub}</option>)}
+                                    </select>
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Başlık:</label>
+                                    <input type="text" value={newInfoTitle} onChange={e => setNewInfoTitle(e.target.value)} className="w-full p-3 border rounded-md" placeholder="Örn: Spa Merkezi" />
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Açıklama (Türkçe):</label>
+                                    <textarea value={newInfoDescTR} onChange={e => setNewInfoDescTR(e.target.value)} className="w-full p-3 border rounded-md" rows="2" placeholder="Spa merkezimiz 09:00-21:00 arası hizmet vermektedir." />
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Açıklama (İngilizce):</label>
+                                    <textarea value={newInfoDescEN} onChange={e => setNewInfoDescEN(e.target.value)} className="w-full p-3 border rounded-md" rows="2" placeholder="Our spa is open from 09:00 to 21:00." />
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Açıklama (Almanca):</label>
+                                    <textarea value={newInfoDescDE} onChange={e => setNewInfoDescDE(e.target.value)} className="w-full p-3 border rounded-md" rows="2" placeholder="Unser Spa ist von 09:00 bis 21:00 Uhr geöffnet." />
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Açıklama (Rusça):</label>
+                                    <textarea value={newInfoDescRU} onChange={e => setNewInfoDescRU(e.target.value)} className="w-full p-3 border rounded-md" rows="2" placeholder="Наш спа работает с 09:00 до 21:00." />
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Resim URL'si (isteğe bağlı):</label>
+                                    <input type="text" value={newInfoImage} onChange={e => setNewInfoImage(e.target.value)} className="w-full p-3 border rounded-md" placeholder="https://ornek.com/resim.jpg" />
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Dış Link (isteğe bağlı):</label>
+                                    <input type="text" value={newInfoLink} onChange={e => setNewInfoLink(e.target.value)} className="w-full p-3 border rounded-md" placeholder="https://ornek.com" />
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Etiketler (virgülle ayırın):</label>
+                                    <input type="text" value={newInfoTags} onChange={e => setNewInfoTags(e.target.value)} className="w-full p-3 border rounded-md" placeholder="ör: spa, masaj, dinlenme" />
+                                </div>
+                                <div className="space-y-4 mb-4">
+                                    <label className="block text-gray-600 font-semibold">Otel Seçin:</label>
+                                    <select value={newInfoHotel || 'Belvil'} onChange={e => setNewInfoHotel(e.target.value)} className="w-full p-3 border rounded-md bg-white">
+                                        {hotelOptions.map(hotel => <option key={hotel}>{hotel}</option>)}
+                                    </select>
+                                </div>
+                                <button onClick={handleAddInfo} className="w-full bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 font-bold">Bilgiyi Ekle</button>
+                                {infoAddFeedback && <div className="mt-2 text-center text-sm text-blue-700">{infoAddFeedback}</div>}
+                                {infoSuggestions.length > 0 && (
+                                    <div className="mb-4 bg-yellow-50 border border-yellow-200 rounded p-3">
+                                        <div className="font-semibold text-yellow-800 mb-1 text-sm">Benzer kayıtlar bulundu:</div>
+                                        <ul className="space-y-1">
+                                            {infoSuggestions.map(sug => (
+                                                <li key={sug.id} className="text-xs">
+                                                    <button type="button" onClick={() => setEditInfoModal(sug)} className="underline text-blue-700 hover:text-blue-900">
+                                                        {sug.data?.title || sug.id.replace(/_/g, ' ')}
+                                                    </button>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {mainTab === 'records' && (
+                            <div>
+                                <h2 className="text-xl font-semibold text-gray-700 mb-4">Kayıtlı Bilgiler</h2>
+                                <div className="flex border-b mb-4 items-center space-x-4">
+                                    <button onClick={() => setActiveSubTab('general')} className={`py-2 px-4 font-semibold ${activeSubTab === 'general' ? 'border-b-2 border-gray-800 text-gray-800' : 'text-gray-500'}`}>Genel Bilgiler ({generalKnowledge.length})</button>
+                                    <button onClick={() => setActiveSubTab('guests')} className={`py-2 px-4 font-semibold ${activeSubTab === 'guests' ? 'border-b-2 border-gray-800 text-gray-800' : 'text-gray-500'}`}>Misafir Profilleri ({guestProfiles.length})</button>
+                                    {activeSubTab === 'general' && (
+                                        <>
+                                            <select value={mainCategoryFilter} onChange={e => { setMainCategoryFilter(e.target.value); setSubCategoryFilter('Tümü'); }} className="ml-4 p-2 border rounded-md">
+                                                <option>Tümü</option>
+                                                {mainCategories.map(cat => <option key={cat}>{cat}</option>)}
+                                            </select>
+                                            <select value={subCategoryFilter} onChange={e => setSubCategoryFilter(e.target.value)} className="ml-2 p-2 border rounded-md">
+                                                <option>Tümü</option>
+                                                {(mainCategoryFilter !== 'Tümü' ? subCategoriesByMain[mainCategoryFilter] : []).map(sub => <option key={sub}>{sub}</option>)}
+                                            </select>
+                                            <select value={tagFilter} onChange={e => setTagFilter(e.target.value)} className="ml-2 p-2 border rounded-md">
+                                                {allTags.map(tag => <option key={tag}>{tag}</option>)}
+                                            </select>
+                                            <select value={hotelFilter} onChange={e => setHotelFilter(e.target.value)} className="ml-2 p-2 border rounded-md">
+                                                <option>Tümü</option>
+                                                {hotelOptions.map(hotel => <option key={hotel}>{hotel}</option>)}
+                                            </select>
+                                        </>
+                                    )}
+                                    <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Arama..." className="ml-2 p-2 border rounded-md flex-1" />
+                                </div>
+                                {isLoading ? <p>Veriler yükleniyor...</p> : (
+                                    <div className="space-y-3 h-96 overflow-y-auto pr-2">
+                                        {activeSubTab === 'general' && filteredGeneralKnowledge
+                                            .filter(item => mainCategoryFilter === 'Tümü' || item.category === mainCategoryFilter)
+                                            .filter(item => subCategoryFilter === 'Tümü' || item.subcategory === subCategoryFilter)
+                                            .filter(item => tagFilter === 'Tümü' || (Array.isArray(item.tags) && item.tags.includes(tagFilter)))
+                                            .filter(item => hotelFilter === 'Tümü' || item.hotel === hotelFilter)
+                                            .filter(item => {
+                                                if (!searchQuery.trim()) return true;
+                                                const q = searchQuery.trim().toLowerCase();
+                                                return (
+                                                    (item.data?.title || '').toLowerCase().includes(q) ||
+                                                    (item.data?.description_tr || '').toLowerCase().includes(q) ||
+                                                    (item.data?.description_en || '').toLowerCase().includes(q) ||
+                                                    (item.data?.description_de || '').toLowerCase().includes(q) ||
+                                                    (item.data?.description_ru || '').toLowerCase().includes(q) ||
+                                                    (item.category || '').toLowerCase().includes(q) ||
+                                                    (item.subcategory || '').toLowerCase().includes(q) ||
+                                                    (Array.isArray(item.tags) && item.tags.some(tag => tag.toLowerCase().includes(q)))
+                                                );
+                                            })
+                                            .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+                                            .map((item, idx, arr) => (
+                                                <div key={item.id}
+                                                    draggable
+                                                    onDragStart={() => handleDragStart(idx)}
+                                                    onDragOver={e => { e.preventDefault(); handleDragOver(idx); }}
+                                                    onDrop={() => handleDrop(arr, () => {}, knowledgeBaseCollection)}
+                                                    className={`bg-gray-50 p-4 rounded-lg flex justify-between items-start ${dragOverIndex === idx ? 'ring-2 ring-purple-400' : ''}`}
+                                                    style={{ cursor: 'grab', opacity: draggedIndex === idx ? 0.5 : 1 }}
+                                                >
+                                                    <div className="flex-1">
+                                                        <div className="flex items-center space-x-2 mb-1">
+                                                            <p className="font-bold capitalize text-gray-800 text-lg">{item.data?.title || item.id.replace(/_/g, ' ')}</p>
+                                                            <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded-full">{item.category || 'Kategori Yok'}</span>
+                                                            {item.subcategory && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">{item.subcategory}</span>}
+                                                            {Array.isArray(item.tags) && item.tags.map((tag, i) => <span key={i} className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full ml-1">{tag}</span>)}
+                                                        </div>
+                                                        {/* Açıklama ve diğer alanlar */}
+                                                        <p className="text-gray-700 mb-2">{item.data?.description_tr}</p>
+                                                        {item.data?.imageUrl && <img src={item.data.imageUrl} alt="Bilgi görseli" className="w-32 h-20 object-cover rounded mb-2" />}
+                                                        {item.data?.link && <a href={item.data.link} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline text-sm">Dış Link</a>}
+                                                    </div>
+                                                    <div className="flex flex-col items-end space-y-2 ml-4">
+                                                        <button onClick={() => setEditInfoModal(item)} className="bg-blue-100 text-blue-700 px-3 py-1 rounded-md hover:bg-blue-200 text-sm">Düzenle</button>
+                                                        <button onClick={() => handleDelete('general', item.id)} className="bg-red-100 text-red-700 px-3 py-1 rounded-md hover:bg-red-200 text-sm">Sil</button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        {activeSubTab === 'guests' && guestProfiles.map(item => (
+                                            <div key={item.id} className="bg-blue-50 p-4 rounded-lg flex justify-between items-start">
+                                                <div>
+                                                    <p className="font-bold capitalize text-gray-800">{(item.identifier && item.identifier.name) || 'Bilinmeyen Misafir'} (Oda: {(item.identifier && item.identifier.room) || 'N/A'})</p>
+                                                    <pre className="text-xs bg-blue-100 p-2 mt-2 rounded overflow-auto"><code>{JSON.stringify(item.data || item.details || {bilgi: 'Veri yok'}, null, 2)}</code></pre>
+                                                </div>
+                                                <button onClick={() => handleDelete('guests', item.id)} className="bg-red-100 text-red-700 px-3 py-1 rounded-md hover:bg-red-200 text-sm ml-4 flex-shrink-0">Sil</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                {editInfoModal && (
+                                    <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+                                        <div className="bg-white p-6 rounded-lg shadow-xl max-w-md w-full">
+                                            <h3 className="text-lg font-bold mb-2">Bilgiyi Düzenle</h3>
+                                            <label className="block text-sm font-semibold mb-1">Ana Kategori:</label>
+                                            <select className="w-full p-2 border rounded mb-2" value={editInfoModal.category || ''} onChange={e => setEditInfoModal({...editInfoModal, category: e.target.value, subcategory: ''})}>
+                                                {mainCategories.map(cat => <option key={cat}>{cat}</option>)}
+                                            </select>
+                                            <label className="block text-sm font-semibold mb-1">Alt Kategori:</label>
+                                            <select className="w-full p-2 border rounded mb-2" value={editInfoModal.subcategory || ''} onChange={e => setEditInfoModal({...editInfoModal, subcategory: e.target.value})}>
+                                                <option value="">Seçiniz</option>
+                                                {(subCategoriesByMain[editInfoModal.category] || []).map(sub => <option key={sub}>{sub}</option>)}
+                                            </select>
+                                            <label className="block text-sm font-semibold mb-1">Başlık:</label>
+                                            <input type="text" className="w-full p-2 border rounded mb-2" value={editInfoModal.data?.title || ''} onChange={e => setEditInfoModal({...editInfoModal, data: {...editInfoModal.data, title: e.target.value}})} />
+                                            <label className="block text-sm font-semibold mb-1">Açıklama (Türkçe):</label>
+                                            <textarea className="w-full p-2 border rounded mb-2" rows="2" value={editInfoModal.data?.description_tr || ''} onChange={e => setEditInfoModal({...editInfoModal, data: {...editInfoModal.data, description_tr: e.target.value}})} />
+                                            <label className="block text-sm font-semibold mb-1">Açıklama (İngilizce):</label>
+                                            <textarea className="w-full p-2 border rounded mb-2" rows="2" value={editInfoModal.data?.description_en || ''} onChange={e => setEditInfoModal({...editInfoModal, data: {...editInfoModal.data, description_en: e.target.value}})} />
+                                            <label className="block text-sm font-semibold mb-1">Açıklama (Almanca):</label>
+                                            <textarea className="w-full p-2 border rounded mb-2" rows="2" value={editInfoModal.data?.description_de || ''} onChange={e => setEditInfoModal({...editInfoModal, data: {...editInfoModal.data, description_de: e.target.value}})} />
+                                            <label className="block text-sm font-semibold mb-1">Açıklama (Rusça):</label>
+                                            <textarea className="w-full p-2 border rounded mb-2" rows="2" value={editInfoModal.data?.description_ru || ''} onChange={e => setEditInfoModal({...editInfoModal, data: {...editInfoModal.data, description_ru: e.target.value}})} />
+                                            <label className="block text-sm font-semibold mb-1">Resim URL'si:</label>
+                                            <input type="text" className="w-full p-2 border rounded mb-2" value={editInfoModal.data?.imageUrl || ''} onChange={e => setEditInfoModal({...editInfoModal, data: {...editInfoModal.data, imageUrl: e.target.value}})} />
+                                            <label className="block text-sm font-semibold mb-1">Dış Link:</label>
+                                            <input type="text" className="w-full p-2 border rounded mb-2" value={editInfoModal.data?.link || ''} onChange={e => setEditInfoModal({...editInfoModal, data: {...editInfoModal.data, link: e.target.value}})} />
+                                            <label className="block text-sm font-semibold mb-1">Etiketler (virgülle ayırın):</label>
+                                            <input type="text" className="w-full p-2 border rounded mb-2" value={Array.isArray(editInfoModal.tags) ? editInfoModal.tags.join(', ') : ''} onChange={e => setEditInfoModal({...editInfoModal, tags: e.target.value.split(',').map(t => t.trim()).filter(Boolean)})} />
+                                            <div className="flex justify-end space-x-2 mt-4">
+                                                <button onClick={() => setEditInfoModal(null)} className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300">İptal</button>
+                                                <button onClick={async () => {
+                                                    const docRef = doc(knowledgeBaseCollection, editInfoModal.id);
+                                                    await setDoc(docRef, {
+                                                        data: editInfoModal.data,
+                                                        category: editInfoModal.category,
+                                                        subcategory: editInfoModal.subcategory,
+                                                        tags: Array.isArray(editInfoModal.tags) ? editInfoModal.tags : [],
+                                                        last_updated: new Date()
+                                                    }, { merge: true });
+                                                    setEditInfoModal(null);
+                                                }} className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700">Kaydet</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {mainTab === 'audit' && (
+                            <div>
+                                <h2 className="text-xl font-semibold text-gray-700 mb-4">İşlem Geçmişi (Audit Log)</h2>
+                                <div className="bg-white rounded-lg shadow p-4 h-96 overflow-y-auto">
+                                    <table className="w-full text-xs">
+                                        <thead>
+                                            <tr className="bg-gray-100">
+                                                <th className="p-2">Kullanıcı</th>
+                                                <th className="p-2">Rol</th>
+                                                <th className="p-2">İşlem</th>
+                                                <th className="p-2">Zaman</th>
+                                                <th className="p-2">Detay</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {adminLogs.slice().reverse().map((log, i) => (
+                                                <tr key={i} className="border-b">
+                                                    <td className="p-2">{log.user || '-'}</td>
+                                                    <td className="p-2">{log.role || '-'}</td>
+                                                    <td className="p-2">{log.type}</td>
+                                                    <td className="p-2">{log.time ? new Date(log.time).toLocaleString() : '-'}</td>
+                                                    <td className="p-2">{log.message || log.name || log.count || '-'}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                        {/* AI Asistanı Chat Kutusu */}
+                        <div className="mb-8 border-b pb-8">
+                            <h2 className="text-xl font-semibold text-gray-700 mb-4">Yönetici AI Asistanı</h2>
+                            <div className="mb-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-gray-700">
+                                <b>Örnek komutlar:</b> {adminHelpExamples.map((ex, i) => <span key={i} className="inline-block mr-2">{ex}</span>)}
+                            </div>
+                            <div className="bg-gray-50 p-4 rounded-lg mb-2 h-64 overflow-y-auto flex flex-col">
+                                {adminMessages.map((msg, i) => (
+                                    <div key={i} className={`mb-2 flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                        <div className={`px-3 py-2 rounded-lg max-w-xl text-sm shadow ${msg.sender === 'user' ? 'bg-purple-500 text-white' : 'bg-gray-200 text-gray-800'}`}>{msg.text}</div>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="flex mt-2">
+                                <input type="text" className="flex-1 p-2 border rounded-l-lg focus:outline-none" placeholder="Komut yazın..." value={adminInput} onChange={e => setAdminInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleAdminCommand()} disabled={isAssistantProcessing} />
+                                <button onClick={() => handleAdminCommand()} disabled={isAssistantProcessing || !adminInput} className="bg-purple-600 text-white px-4 py-2 rounded-r-lg hover:bg-purple-700 disabled:bg-purple-300">Gönder</button>
+                            </div>
+                            {/* Onay modalı */}
+                            {confirmModalVisible && (
+                                <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+                                    <div className="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full">
+                                        <h3 className="text-lg font-bold mb-2">Onay Gerekli</h3>
+                                        <p className="mb-4">Bu işlem geri alınamaz. Devam etmek istiyor musunuz?</p>
+                                        <div className="flex justify-end space-x-2">
+                                            <button onClick={handleCancel} className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300">İptal</button>
+                                            <button onClick={handleConfirm} className="px-4 py-2 rounded bg-red-500 text-white hover:bg-red-600">Onayla</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        {/* Bildirim çanı ve paneli */}
+                        <div className="fixed top-6 right-8 z-50">
+                            <button onClick={() => setNotifPanelOpen(v => !v)} className="relative bg-white rounded-full shadow p-2 hover:bg-gray-100">
+                                <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0 1 18 14.158V11a6.002 6.002 0 0 0-4-5.659V4a2 2 0 1 0-4 0v1.341C7.67 7.165 6 9.388 6 12v2.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 1 1-6 0v-1m6 0H9"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        const GuestView = ({}) => {
+             const [messages, setMessages] = useState([{ text: 'Merhaba!', sender: 'ai' }]);
+            const [input, setInput] = useState('');
+            const [isLoading, setIsLoading] = useState(false);
+            const messagesEndRef = useRef(null);
+            
+            useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, isLoading]);
+            
+            /**
+             * Kullanıcıdan gelen mesajı işler, Gemini ve Firestore ile yanıt üretir.
+             * Hata durumunda kullanıcıya ve geliştiriciye bilgi verir.
+             */
+            const handleSend = async (textToSend = input) => {
+                if (textToSend.trim() === '' || isLoading) return;
+                const userMessage = { text: textToSend, sender: 'user' };
+                setInput(''); setIsLoading(true);
+                setMessages(prev => [...prev, userMessage]);
+                let dbContext = "";
+                let docsData = [];
+                try {
+                    const generalQuery = await getDocs(query(knowledgeBaseCollection));
+                    docsData = generalQuery.docs.map(doc => ({
+                        id: doc.id,
+                        category: doc.data().category || 'Bilinmiyor'
+                    }));
+                    dbContext = "## Genel Otel Bilgileri (Belge ID ve Kategori ile):\n" + JSON.stringify(docsData);
+                } catch (err) {
+                    setMessages(prev => [...prev, { text: "Veritabanına erişilemiyor. Lütfen bağlantınızı kontrol edin.", sender: 'ai', error: err.message }]);
+                    setIsLoading(false);
+                    console.warn('Firestore erişim hatası:', err);
+                    return;
+                }
+                const fullConversationContext = [...messages, userMessage].map(m => `${m.sender === 'user' ? 'Misafir' : 'PapillonAI'}: ${m.text}`).join('\n');
+                const masterPrompt = `You are PapillonAI, a smart hotel assistant. Always detect the language of the user's last message and answer in that language (English, German, Russian, or Turkish), even if the database or knowledge is in Turkish. For all actions (greet, clarify, cannot_answer, answer, chitchat, help), always reply in the user's language. When using database JSON, summarize and answer in the user's language, naturally and fluently.
+
+If the user asks for a nearby place (e.g. beach, hospital, pharmacy, restaurant), always return both a 'query' (the search keyword) and a 'type' (the Google Maps place type, e.g. 'beach', 'hospital', 'pharmacy', 'restaurant').
+
+Example:
+- User: 'en yakın plaj nerede' → { "action": "search_maps", "query": "plaj", "type": "beach" }
+- User: 'I would like to know nearby beaches' → { "action": "search_maps", "query": "beach", "type": "beach" }
+- User: 'en yakın hastane' → { "action": "search_maps", "query": "hastane", "type": "hospital" }
+
+If the user asks what you can do, or how you can help, reply with the action "help" and a friendly, detailed message about your capabilities.
+
+Example:
+- User: "Sen neler yapabilirsin?" → { "action": "help", "message": "Size otel hakkında bilgi verebilir, şikayet kaydedebilir, profilinizi oluşturabilir, yakın yerleri bulabilir ve daha fazlasını yapabilirim." }
+- User: "How can you help me?" → { "action": "help", "message": "I can provide hotel information, log complaints, save your preferences, find nearby places, and more." }
+
+If the user says something positive, gives a compliment, or thanks you, reply with a warm, friendly message using the action "chitchat". Example:
+- User: "Your rooms are beautiful" → { "action": "chitchat", "message": "Thank you so much! We're glad you liked our rooms." }
+- User: "Teşekkürler" → { "action": "chitchat", "message": "Rica ederim, her zaman yardımcı olmaktan mutluluk duyarım!" }
+
+**IMPORTANT:**
+- If the user's request is ambiguous or missing key details (such as hotel name, topic, or specific context), always ask a clarifying question first (action: clarify) and do NOT provide a long or detailed answer yet.
+- Only provide a detailed answer if the user has specified the hotel, the topic, and any necessary details. Otherwise, keep your answer short or ask for clarification.
+- Example: If the user asks about private lessons but does not specify the hotel, reply with a clarify action and options for hotel selection.
+
+**For check-in/check-out or giriş/çıkış saatleri questions:**
+- If the user asks about check-in or check-out times (e.g. "girişler kaça kadar", "check-in time", "otel çıkış saati"), always try to match the question to the relevant document in the knowledge base (e.g. a document with title or category related to check-in/check-out).
+- If such a document exists, answer from that document.
+- If not, reply with cannot_answer and suggest that this information should be added to the knowledge base.
+
+1. **LOG_COMPLAINT**: If the user is reporting a complaint or problem (e.g. "restoran çok kalabalık", "odamda klima çalışmıyor"), respond:
+   { "action": "log_complaint", "complaintType": "<short type>", "message": "<user message>" }
+2. **SAVE_PROFILE**: If the user shares personal or preference info (e.g. isim, oda no, tercih, ülke), respond:
+   { "action": "save_profile", "profile": { "name": "...", "room": "...", "preferences": "...", "country": "..." } }
+   - If the user mentions a country (e.g. "Türkiye'den geliyorum"), always set the country field explicitly.
+3. **SEARCH_MAPS**: If the user asks for a nearby place (e.g. en yakın sahil, restoran, eczane), respond:
+   { "action": "search_maps", "query": "<aranacak yer>", "type": "<place type>" }
+4. **GREETING**: If the user gives a simple greeting, respond:
+                    { "action": "greet", "message": "Merhaba, size nasıl yardımcı olabilirim?" }
+5. **CLARIFY_AMBIGUOUS_REQUEST**: If the user's request matches multiple items in the database, ask for clarification.
+                    { "action": "clarify", "question": "Hangi otelimiz için bilgi almak istersiniz?", "options": ["Papillon Belvil", "Papillon Zeugma", "Papillon Ayscha"] }
+6. **ANSWER_FROM_DB**: If the user's request clearly matches a SINGLE document ID in the database context.
+                    { "action": "answer", "docId": "<the_single_matching_doc_id>" }
+7. **CANNOT_ANSWER**: If you cannot understand the request or find any relevant information.
+                    { "action": "cannot_answer", "message": "Bu konuda maalesef bilgim yok. Başka bir konuda yardımcı olabilir miyim?" }
+---
+### Database Document List (ID and Category):\n${dbContext}\n### Conversation History:\n${fullConversationContext}`;
+                try {
+                    const initialResponse = await callGeminiAPI(masterPrompt, 'json');
+                    const decision = JSON.parse(initialResponse.replace(/```json/g, '').replace(/```/g, '').trim());
+                    if (decision.action === 'search_maps') {
+                        // Google Maps Places API ile arama yap (backend proxy üzerinden)
+                        console.log('search_maps action:', decision);
+                        try {
+                            const mapsResp = await fetch('https://hotelai.onrender.com/api/maps', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ query: decision.query, type: decision.type })
+                            });
+                            const mapsData = await mapsResp.json();
+                            // Sadece hastane/sağlık kuruluşu filtrele
+                            let place = null;
+                            if (mapsData.results && mapsData.results.length > 0) {
+                                place = mapsData.results.find(p => {
+                                    const name = (p.name || '').toLowerCase();
+                                    const types = p.types || [];
+                                    return name.includes('hastane') || name.includes('hospital') || types.includes('hospital') || types.includes('health');
+                                }) || mapsData.results[0];
+                            }
+                            if (place) {
+                                const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${place.geometry.location.lat},${place.geometry.location.lng}`;
+                                setMessages(prev => [...prev, { text: `En yakın hastane: ${place.name}\nAdres: ${place.vicinity}\n[Haritada Göster](${mapsUrl})`, sender: 'ai' }]);
+                            } else {
+                                setMessages(prev => [...prev, { text: `Yakında uygun bir hastane bulunamadı.`, sender: 'ai' }]);
+                            }
+                        } catch (err) {
+                            setMessages(prev => [...prev, { text: `Google Maps araması sırasında hata: ${err.message}`, sender: 'ai' }]);
+                        }
+                    } else if (decision.action === 'log_complaint') {
+                        // Şikayet kaydı: complaint_logs koleksiyonunda ilgili tipin sayacını artır
+                        const complaintId = (decision.complaintType || 'genel_sorun').toLowerCase().replace(/\s/g, '_');
+                        const complaintRef = doc(complaintLogsCollection, complaintId);
+                        await setDoc(complaintRef, {
+                            complaintType: decision.complaintType,
+                            lastMessage: decision.message,
+                            count: increment(1),
+                            lastReported: new Date()
+                        }, { merge: true });
+                        setMessages(prev => [...prev, { text: "Şikayetiniz kaydedildi ve yönetim ekibimize iletildi. Başka bir konuda yardımcı olabilir miyim?", sender: 'ai' }]);
+                    } else if (decision.action === 'save_profile') {
+                        // Misafir profili kaydı
+                        // Eğer country alanı yoksa, preferences veya mesajdan ülke bilgisini tespit etmeye çalış
+                        let profile = decision.profile;
+                        if (!profile.country) {
+                            // Basit ülke tespiti
+                            const countryList = ['Türkiye', 'Almanya', 'Germany', 'Deutschland', 'Russia', 'Rusya', 'England', 'İngiltere', 'UK', 'USA', 'ABD', 'France', 'Fransa', 'Italy', 'İtalya', 'Azerbaycan', 'Kazakistan', 'Hollanda', 'Netherlands', 'Poland', 'Polonya', 'Ukraine', 'Ukrayna', 'Belarus', 'Beyaz Rusya', 'Georgia', 'Gürcistan', 'Iran', 'İran', 'Iraq', 'Irak', 'Syria', 'Suriye', 'Somalia', 'Somali', 'Libya', 'Libya', 'Egypt', 'Mısır', 'Russia', 'Rusya', 'Russia', 'Rusya'];
+                            let found = null;
+                            if (profile.preferences) {
+                                for (const c of countryList) {
+                                    if (profile.preferences.toLowerCase().includes(c.toLowerCase())) { found = c; break; }
+                                }
+                            }
+                            if (!found && input) {
+                                for (const c of countryList) {
+                                    if (input.toLowerCase().includes(c.toLowerCase())) { found = c; break; }
+                                }
+                            }
+                            if (found) profile.country = found;
+                        }
+                        const guestId = (profile.name || 'misafir').toLowerCase().replace(/\s/g, '_') + '_' + (profile.room || Date.now());
+                        const guestRef = doc(guestProfilesCollection, guestId);
+                        await setDoc(guestRef, {
+                            data: profile,
+                            identifier: { name: profile.name, room: profile.room },
+                            last_updated: new Date()
+                        }, { merge: true });
+                        setMessages(prev => [...prev, { text: "Profil bilgileriniz kaydedildi. Size daha iyi yardımcı olabilmemiz için teşekkürler!", sender: 'ai' }]);
+                    } else if (decision.action === 'greet' || decision.action === 'clarify' || decision.action === 'cannot_answer') {
+                        setMessages(prev => [...prev, { text: decision.message || decision.question, options: decision.options, sender: 'ai', info: decision.action === 'clarify' ? 'Lütfen bir seçim yapınız.' : undefined }]);
+                    } else if (decision.action === 'chitchat') {
+                        setMessages(prev => [...prev, { text: decision.message, sender: 'ai' }]);
+                    } else if (decision.action === 'help') {
+                        setMessages(prev => [...prev, { text: decision.message, sender: 'ai' }]);
+                    } else if (decision.action === 'answer') {
+                        const docRef = doc(knowledgeBaseCollection, decision.docId);
+                        const docSnap = await getDoc(docRef);
+                        if(docSnap.exists()) {
+                            const data = docSnap.data();
+                            const formattingPrompt = `Sen PapillonAI'sın. Misafirin "${input}" sorusuna, aşağıdaki JSON verisini kullanarak, misafirin sorduğu dilde (Türkçe, İngilizce, Almanca veya Rusça) akıcı ve doğal bir cevap ver. Eğer ilgili dilde açıklama yoksa, Türkçe açıklamayı çevir ve kullanıcının dilinde sun. Cevabında asla '*' gibi formatlama karakterleri kullanma ve bilgiyi doğal bir paragraf halinde, sanki bir konsiyerj gibi sun. Veri: ${JSON.stringify(data.data)}`;
+                            const formattedAnswer = await callGeminiAPI(formattingPrompt);
+                            setMessages(prev => [...prev, { text: formattedAnswer, imageUrl: data.data.imageUrl, sender: 'ai' }]);
+                        } else {
+                            setMessages(prev => [...prev, { text: "İlgili bilgiyi veritabanında bulamadım.", sender: 'ai', error: 'Belge bulunamadı.' }]);
+                        }
+                    } else { 
+                        setMessages(prev => [...prev, { text: "Anlayamadım, lütfen tekrar deneyin.", sender: 'ai', error: 'Beklenmeyen yanıt.' }]);
+                    }
+                } catch (error) {
+                    setMessages(prev => [...prev, { text: "Üzgünüm, bir sorun oluştu. Lütfen tekrar deneyin.", sender: 'ai', error: error.message }]);
+                    console.warn('Gemini API veya yanıt işleme hatası:', error);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            const ChatMessage = ({ msg }) => {
+                const handleImageError = (e) => {
+                    e.target.style.display = 'none';
+                    const errorText = document.createElement('p');
+                    errorText.textContent = '[Resim yüklenemedi]';
+                    errorText.className = 'text-xs text-red-500 italic mt-1';
+                    e.target.parentNode.appendChild(errorText);
+                };
+                return (
+                    <div className={`flex items-end ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} mb-3`}>
+                        <div className={`p-3 px-4 rounded-2xl max-w-lg shadow-sm ${msg.sender === 'user' ? 'bg-gray-800 text-white rounded-br-none' : 'bg-white text-gray-800 rounded-bl-none'}`}> 
+                            <p>{msg.text}</p>
+                            {msg.imageUrl && <img src={msg.imageUrl} alt="Yardımcı görsel" className="mt-2 rounded-lg" onError={handleImageError} />}
+                            {msg.options && (
+                                <div className="flex flex-wrap gap-2 mt-3">
+                                    {msg.options.map((option, index) => (
+                                        <button key={index} onClick={() => handleSend(option)} className="bg-purple-100 text-purple-800 text-sm font-semibold px-3 py-1 rounded-full hover:bg-purple-200">{option}</button>
+                                    ))}
+                                </div>
+                            )}
+                            {msg.error && <div className="mt-2 text-xs text-red-600 font-bold">{msg.error}</div>}
+                            {msg.info && <div className="mt-2 text-xs text-blue-600 font-bold">{msg.info}</div>}
+                        </div>
+                    </div>
+                );
+            };
+            const LoadingBubble = () => (<div className="flex items-end justify-start mb-3"><div className="p-3 px-4 rounded-2xl max-w-lg shadow-sm bg-white text-gray-800 rounded-bl-none flex space-x-1"><div className="w-2.5 h-2.5 bg-gray-400 rounded-full bounce-1"></div><div className="w-2.5 h-2.5 bg-gray-400 rounded-full bounce-2"></div><div className="w-2.5 h-2.5 bg-gray-400 rounded-full bounce-3"></div></div></div>);
+            const ButterflyLogo = () => (<svg role="img" width="32" height="32" className="mr-3 text-gray-800" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M12.484 12.284C12.17 12.094 11.83 12.094 11.516 12.284C8.257 14.373 5.018 15.113 2.019 13.063C1.353 12.593 1.002 11.833 1 11.023C1 9.483 1.942 8.212 3.321 7.642C4.311 7.222 5.371 7.022 6.481 7.022C8.212 7.022 9.802 7.612 11.021 8.843C11.644 9.484 12.356 9.484 12.979 8.843C14.198 7.612 15.788 7.022 17.519 7.022C18.629 7.022 19.689 7.222 20.679 7.642C22.058 8.212 23 9.483 23 11.023C22.998 11.833 22.647 12.593 21.981 13.063C18.982 15.113 15.743 14.373 12.484 12.284Z" /><path d="M12.979 15.157C12.356 14.516 11.644 14.516 11.021 15.157C9.802 16.388 8.212 16.978 6.481 16.978C5.371 16.978 4.311 16.778 3.321 16.358C1.942 15.788 1 14.517 1 12.977C1.002 12.167 1.353 11.407 2.019 10.937C2.132 10.85 2.257 10.776 2.388 10.716C2.585 11.543 3.033 12.288 3.684 12.868C5.034 14.248 6.881 14.658 8.709 14.238C10.595 13.798 11.996 12.381 12.451 10.495C12.493 10.312 12.516 10.126 12.516 9.936C12.179 9.971 11.836 9.971 11.498 9.936C11.5 10.125 11.521 10.314 11.565 10.495C12.02 12.381 13.421 13.798 15.307 14.238C17.135 14.658 18.982 14.248 20.332 12.868C20.983 12.288 21.431 11.543 21.628 10.716C21.759 10.776 21.884 10.85 21.997 10.937C22.663 11.407 23.014 12.167 23.016 12.977C23.016 14.517 22.074 15.788 20.695 16.358C19.705 16.778 18.645 16.978 17.535 16.978C15.804 16.978 14.214 16.388 12.995 15.157H12.979Z"/></svg>);
+
+            return (<div className="flex justify-center items-center h-full bg-gray-200"><div className="flex flex-col h-full w-full md:h-[90vh] md:max-w-2xl lg:max-w-4xl md:rounded-2xl shadow-2xl bg-gray-100 overflow-hidden"><header className="bg-white p-4 flex items-center border-b shadow-sm w-full"><ButterflyLogo /><h1 className="text-2xl font-bold text-gray-800">PapillonAI</h1></header><main className="flex-1 p-4 overflow-y-auto"><div className="space-y-2">{messages.map((msg, i) => <ChatMessage key={i} msg={msg} />)}{isLoading && <LoadingBubble />}{<div ref={messagesEndRef} />}</div></main><footer className="bg-white p-3 border-t"><div className="flex items-center rounded-full border border-gray-300 focus-within:ring-2 focus-within:ring-gray-500 bg-white p-1"><input type="text" className="flex-1 p-2 bg-transparent focus:outline-none" placeholder="Chat..." value={input} onChange={(e) => setInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleSend()} disabled={isLoading}/><button onClick={() => handleSend()} disabled={isLoading || !input} className="ml-2 bg-gray-800 text-white rounded-full p-2 hover:bg-gray-900 disabled:bg-gray-400"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg></button></div></footer></div></div>);
+        };
+
+        const LoginPage = ({ password, setPassword, error, handleLogin, setPage }) => {
+            const [username, setUsername] = useState('');
+            const [selectedRole, setSelectedRole] = useState('admin');
+            return (
+                <div className="flex items-center justify-center min-h-screen bg-gray-100">
+                    <div className="p-8 bg-white rounded-lg shadow-xl w-full max-w-sm">
+                        <h2 className="text-2xl font-bold text-center text-gray-800 mb-6">Yönetici Girişi</h2>
+                        <form onSubmit={e => handleLogin(e, username, selectedRole)} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700" htmlFor="username">Kullanıcı Adı:</label>
+                                <input type="text" id="username" value={username} onChange={e => setUsername(e.target.value)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-gray-500 focus:border-gray-500" required />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700" htmlFor="role">Rol:</label>
+                                <select id="role" value={selectedRole} onChange={e => setSelectedRole(e.target.value)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-gray-500 focus:border-gray-500">
+                                    <option value="admin">Admin</option>
+                                    <option value="editor">Editör</option>
+                                    <option value="viewer">Görüntüleyici</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700" htmlFor="password">Şifre:</label>
+                                <input type="password" id="password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-gray-500 focus:border-gray-500" required />
+                            </div>
+                            {error && <p className="text-red-500 text-sm">{error}</p>}
+                            <button type="submit" className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gray-800 hover:bg-gray-900">Giriş Yap</button>
+                            <button type="button" onClick={() => setPage('guest')} className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 mt-2">Misafir Sayfasına Dön</button>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        function App() {
+            const [page, setPage] = useState('guest');
+            const [password, setPassword] = useState('');
+            const [error, setError] = useState('');
+            // Kullanıcı ve rol state'i
+            const [adminUser, setAdminUser] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('adminUser')) || null; } catch { return null; }
+            });
+            const [role, setRole] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('adminRole')) || 'admin'; } catch { return 'admin'; }
+            });
+            
+            useEffect(() => {
+                const auth = getAuth(app);
+                const authenticateUser = async () => {
+                    try { if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token); else await signInAnonymously(auth); } 
+                    catch (error) { console.error("Firebase Auth Error:", error); }
+                };
+                authenticateUser();
+            }, []);
+            const handleLogin = (e, username, selectedRole) => {
+                e.preventDefault();
+                if (password === ADMIN_PASSWORD) {
+                    setPage('admin'); setError(''); setPassword('');
+                    setAdminUser(username); setRole(selectedRole);
+                    localStorage.setItem('adminUser', JSON.stringify(username));
+                    localStorage.setItem('adminRole', JSON.stringify(selectedRole));
+                } else { setError('Hatalı şifre.'); }
+            };
+            switch (page) {
+                case 'admin': return <AdminView onLogout={() => setPage('guest')} adminUser={adminUser} role={role} />;
+                case 'login': return <LoginPage password={password} setPassword={setPassword} error={error} handleLogin={handleLogin} setPage={setPage} />;
+                case 'guest': default: return (<div className="w-screen h-screen"><GuestView /><button onClick={() => setPage('login')} className="absolute bottom-4 right-4 bg-gray-800 text-white p-2 rounded-full opacity-60 hover:opacity-100 shadow-lg" title="Yönetici Paneli"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg></button></div>);
+            }
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
