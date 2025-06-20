@@ -12,6 +12,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const allowedOrigins = [
   'https://papillonai-frontend.netlify.app',
   'https://talhaturkman.com', // kullanıcının kendi domaini
+  'https://papillon-hotelai-backend.onrender.com',
   'http://localhost:3000', 'http://localhost:5000', 'http://127.0.0.1:3000', 'http://127.0.0.1:5000'
 ];
 app.use(cors({
