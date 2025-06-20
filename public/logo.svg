@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="50" viewBox="0 0 200 50">
+  <style>
+    .text { font-family: Arial, sans-serif; font-size: 24px; fill: #2563eb; }
+    .icon { fill: #2563eb; }
+  </style>
+  <rect class="icon" x="10" y="10" width="30" height="30" rx="5"/>
+  <text class="text" x="50" y="33">HotelAI</text>
+</svg> 

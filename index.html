@@ -9,24 +9,40 @@
     <meta name="theme-color" content="#2563eb">
     
     <!-- PWA Icons -->
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-icon-180.png">
+    <link rel="icon" type="image/svg+xml" sizes="32x32" href="/icons/icon-32.svg">
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-icon-180.svg">
     
     <!-- Modern UI Libraries -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="./dist/output.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/@mdi/font@6.5.95/css/materialdesignicons.min.css" rel="stylesheet">
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     
     <!-- Firebase -->
     <script type="module">
+        // Firebase yapılandırması
+        const firebaseConfig = {
+            apiKey: "AIzaSyBEsZy9K0AfUhTbIMT-H_DEr3tr5LcoQV0",
+            authDomain: "gen-lang-client-0930707875.firebaseapp.com",
+            projectId: "gen-lang-client-0930707875",
+            storageBucket: "gen-lang-client-0930707875.firebasestorage.app",
+            messagingSenderId: "554933755828",
+            appId: "1:554933755828:web:524d063fef4a9783801ce1",
+            measurementId: "G-P0MP1C0N1H"
+        };
+
+        // Firebase'i başlat
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { 
             getFirestore, collection, addDoc, query, where, 
             orderBy, limit, onSnapshot 
         } from "https://www.gstatic.com/firebasejs/10.8.0/firestore.js";
 
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
         window.firebase = {
-            initializeApp,
+            app,
+            db,
             firestore: {
                 getFirestore, collection, addDoc, query, where,
                 orderBy, limit, onSnapshot
@@ -128,7 +144,7 @@
             <!-- Header -->
             <header class="bg-white shadow-md p-4 flex justify-between items-center">
                 <div class="flex items-center space-x-4">
-                    <img src="/logo.png" alt="HotelAI" class="h-8">
+                    <img src="/logo.svg" alt="HotelAI" class="h-8">
                     <h1 class="text-xl font-semibold">HotelAI Assistant</h1>
                 </div>
                 
@@ -311,21 +327,11 @@
     <script>
         const { createApp, ref, onMounted, computed, nextTick } = Vue;
 
-        // Firebase Configuration
-        const firebaseConfig = {
-            apiKey: "AIzaSyBEsZy9K0AfUhTbIMT-H_DEr3tr5LcoQV0",
-            authDomain: "gen-lang-client-0930707875.firebaseapp.com",
-            projectId: "gen-lang-client-0930707875",
-            storageBucket: "gen-lang-client-0930707875.appspot.com",
-            messagingSenderId: "554933755828",
-            appId: "1:554933755828:web:524d063fef4a9783801ce1"
-        };
-
         createApp({
             setup() {
                 // Firebase initialization
-                const app = window.firebase.initializeApp(firebaseConfig);
-                const db = window.firebase.firestore.getFirestore(app);
+                const app = window.firebase.app;
+                const db = window.firebase.db;
 
                 // State
                 const isAuthenticated = ref(false);
