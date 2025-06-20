@@ -4,8 +4,8 @@
   "main": "./backend/index.js",
   "type": "module",
   "scripts": {
-    "start": "cd backend && node index.js",
-    "dev": "cd backend && nodemon index.js",
+    "start": "node ./backend/index.js",
+    "dev": "nodemon ./backend/index.js",
     "test": "jest",
     "lint": "eslint .",
     "format": "prettier --write .",
